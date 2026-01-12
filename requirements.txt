@@ -8,6 +8,10 @@
 # Google ADK (Agent Development Kit)
 google-adk>=0.1.0
 
+# API Server (for deployment)
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
 # LiteLLM - enables OpenRouter and other LLM providers
 litellm>=1.40.0
 

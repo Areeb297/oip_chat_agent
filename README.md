@@ -407,6 +407,101 @@ python -c "from google.adk.agents import LlmAgent; print('google-adk OK')"
 
 ---
 
+## API Deployment (For Frontend Integration)
+
+Instead of using `adk web`, you can run the agent as a REST API server.
+
+### Run API Server Locally
+
+```bash
+# Option 1: Using uvicorn directly
+uvicorn main:app --host 0.0.0.0 --port 8080
+
+# Option 2: Using python
+python main.py
+```
+
+Server runs at `http://localhost:8080`
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/run_sse` | POST | Execute agent (main endpoint) |
+| `/health` | GET | Health check |
+| `/list-apps` | GET | List available agents |
+
+### Example: Query the Agent
+
+```bash
+curl -X POST http://localhost:8080/run_sse \
+  -H "Content-Type: application/json" \
+  -d '{
+    "appName": "my_agent",
+    "userId": "user_123",
+    "sessionId": "session_abc",
+    "newMessage": {
+      "role": "user",
+      "parts": [{"text": "What is OIP?"}]
+    },
+    "streaming": false
+  }'
+```
+
+### Example: Streaming Response (SSE)
+
+```bash
+curl -X POST http://localhost:8080/run_sse \
+  -H "Content-Type: application/json" \
+  -d '{
+    "appName": "my_agent",
+    "userId": "user_123",
+    "sessionId": "session_abc",
+    "newMessage": {
+      "role": "user",
+      "parts": [{"text": "Explain the ticketing system"}]
+    },
+    "streaming": true
+  }'
+```
+
+### Frontend Integration (JavaScript)
+
+```javascript
+// Non-streaming
+const response = await fetch('http://localhost:8080/run_sse', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    appName: 'my_agent',
+    userId: 'user_123',
+    sessionId: 'session_abc',
+    newMessage: {
+      role: 'user',
+      parts: [{ text: 'What is OIP?' }]
+    },
+    streaming: false
+  })
+});
+const data = await response.json();
+console.log(data.content.parts[0].text);
+```
+
+### Deploy to Cloud Run
+
+```bash
+# Build and deploy
+gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/oip-agent
+gcloud run deploy oip-agent \
+  --image gcr.io/YOUR_PROJECT_ID/oip-agent \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars GOOGLE_API_KEY=xxx,OPENROUTER_API_KEY=xxx
+```
+
+---
+
 ## Future Enhancements
 
 - [ ] Hybrid search (BM25 + vector)
