@@ -474,12 +474,55 @@ Server runs at `http://localhost:8080`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/run_sse` | POST | Execute agent (main endpoint) |
+| `/run_sse` | POST | ADK-compatible endpoint (matches adk web format) |
+| `/chat` | POST | Simple chat endpoint |
+| `/session/new` | POST | Create new session |
 | `/health` | GET | Health check |
-| `/list-apps` | GET | List available agents |
 
-### Example: Query the Agent
+> **Auto-Session Creation:** Sessions are created automatically on first use. Just pass any `sessionId` you want - if it doesn't exist, it will be created. No need to call `/session/new` first.
 
+---
+
+### Endpoint 1: `/run_sse` (ADK-Compatible)
+
+**Request:**
+```json
+{
+  "appName": "my_agent",
+  "userId": "user_123",
+  "sessionId": "session_abc",
+  "newMessage": {
+    "role": "user",
+    "parts": [{"text": "What is OIP?"}]
+  },
+  "streaming": false
+}
+```
+
+**Parameter Reference:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `appName` | string | Yes | Agent application name. Use `"my_agent"` for this project. |
+| `userId` | string | Yes | Unique identifier for the user. Used to isolate sessions per user. |
+| `sessionId` | string | Yes | Conversation session ID. Auto-created if doesn't exist. Use same ID to continue a conversation. |
+| `newMessage` | object | Yes | The user's message object. |
+| `newMessage.role` | string | Yes | Message role. Always `"user"` for user messages. |
+| `newMessage.parts` | array | Yes | Array of message parts. Each part has a `text` field. |
+| `streaming` | boolean | No | `false` = JSON response, `true` = Server-Sent Events stream. Default: `false`. |
+
+**Response (non-streaming):**
+```json
+{
+  "response": "OIP (Operations Intelligence Platform) is...",
+  "sessionId": "session_abc",
+  "userId": "user_123"
+}
+```
+
+**Response (streaming):** Server-Sent Events (SSE) with `data: {"text": "..."}` chunks.
+
+**cURL Example:**
 ```bash
 curl -X POST http://localhost:8080/run_sse \
   -H "Content-Type: application/json" \
@@ -495,27 +538,76 @@ curl -X POST http://localhost:8080/run_sse \
   }'
 ```
 
-### Example: Streaming Response (SSE)
+---
 
+### Endpoint 2: `/chat` (Simple)
+
+A simpler endpoint for basic chat interactions.
+
+**Request:**
+```json
+{
+  "message": "What is OIP?",
+  "session_id": "session_abc"
+}
+```
+
+**Parameter Reference:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `message` | string | Yes | The user's question or message text. |
+| `session_id` | string | No | Session ID for conversation continuity. Auto-generated UUID if omitted. Auto-created if doesn't exist. |
+
+**Response:**
+```json
+{
+  "response": "OIP (Operations Intelligence Platform) is...",
+  "session_id": "session_abc"
+}
+```
+
+**Response Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `response` | The agent's reply text. |
+| `session_id` | The session ID (either provided or auto-generated). Use this for follow-up messages. |
+
+**cURL Example:**
 ```bash
-curl -X POST http://localhost:8080/run_sse \
+curl -X POST http://localhost:8080/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "appName": "my_agent",
-    "userId": "user_123",
-    "sessionId": "session_abc",
-    "newMessage": {
-      "role": "user",
-      "parts": [{"text": "Explain the ticketing system"}]
-    },
-    "streaming": true
+    "message": "What is OIP?",
+    "session_id": "session_abc"
   }'
 ```
+
+> **Note:** If `session_id` is omitted, a new UUID will be generated automatically. Sessions are auto-created on first use.
+
+---
+
+### Endpoint 3: `/session/new`
+
+**Request:** (no body required)
+```bash
+curl -X POST http://localhost:8080/session/new
+```
+
+**Response:**
+```json
+{
+  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+---
 
 ### Frontend Integration (JavaScript)
 
 ```javascript
-// Non-streaming
+// Using /run_sse endpoint (ADK-compatible)
 const response = await fetch('http://localhost:8080/run_sse', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
@@ -531,7 +623,19 @@ const response = await fetch('http://localhost:8080/run_sse', {
   })
 });
 const data = await response.json();
-console.log(data.content.parts[0].text);
+console.log(data.response);  // "OIP (Operations Intelligence Platform) is..."
+
+// Using /chat endpoint (simpler)
+const chatResponse = await fetch('http://localhost:8080/chat', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    message: 'What is OIP?',
+    session_id: 'session_abc'
+  })
+});
+const chatData = await chatResponse.json();
+console.log(chatData.response);
 ```
 
 ### Deploy to Cloud Run
