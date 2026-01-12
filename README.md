@@ -152,17 +152,22 @@ Ticketing Chatbot/
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (tested on 3.12)
 - OpenRouter API key
 - Google API key (for Gemini)
 
 ### 1. Clone and Navigate
 
 ```bash
-cd "Ticketing Chatbot"
+git clone https://github.com/Areeb297/oip_chat_agent.git
+cd oip_chat_agent
 ```
 
-### 2. Create Virtual Environment
+---
+
+### 2. Create Environment (Choose One)
+
+#### Option A: Python venv (if Python is installed)
 
 ```bash
 # Windows
@@ -174,11 +179,41 @@ python -m venv venv
 source venv/bin/activate
 ```
 
+#### Option B: Conda (if Conda/Miniconda is installed)
+
+```bash
+# Create environment with Python 3.12
+conda create -n oip_agent python=3.12 -y
+
+# Activate environment
+conda activate oip_agent
+
+# Verify Python version
+python --version
+```
+
+**Conda useful commands:**
+```bash
+# List all environments
+conda env list
+
+# Deactivate environment
+conda deactivate
+
+# Remove environment (if needed)
+conda env remove -n oip_agent
+```
+
+---
+
 ### 3. Install Dependencies
 
 ```bash
+# Works for both venv and conda
 pip install -r requirements.txt
 ```
+
+> **Note:** Conda environments include pip by default. Use pip for installing from requirements.txt.
 
 ### 4. Configure Environment
 
@@ -335,10 +370,22 @@ Ensure `.env` file exists with valid API key.
 
 ### Import errors
 
-Make sure you're in the virtual environment:
+Make sure you're in the correct environment:
 ```bash
-venv\Scripts\activate  # Windows
-source venv/bin/activate  # Linux/Mac
+# If using venv
+venv\Scripts\activate        # Windows
+source venv/bin/activate     # Linux/Mac
+
+# If using conda
+conda activate oip_agent
+```
+
+### Conda: command not found
+
+Initialize conda for your shell:
+```bash
+conda init bash   # or zsh, powershell, etc.
+# Then restart your terminal
 ```
 
 ---
