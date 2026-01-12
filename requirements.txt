@@ -1,0 +1,47 @@
+# =============================================================================
+# Ebttikar OIP Assistant - Requirements
+# =============================================================================
+# Tested on: Python 3.12, Windows 10/11
+# Last updated: January 2026
+# =============================================================================
+
+# Google ADK (Agent Development Kit)
+google-adk>=0.1.0
+
+# LiteLLM - enables OpenRouter and other LLM providers
+litellm>=1.40.0
+
+# Vector Store - FAISS
+# Note: On Windows, if you get DLL errors, run:
+#   pip install --force-reinstall --no-cache-dir faiss-cpu
+faiss-cpu>=1.7.4
+
+# Document Processing
+PyMuPDF>=1.23.0          # PDF extraction
+python-docx>=1.0.0       # DOCX extraction
+lxml>=4.9.0              # Required by python-docx
+
+# Data Validation
+pydantic>=2.0.0
+
+# HTTP Client
+requests>=2.31.0
+
+# Environment Variables
+python-dotenv>=1.0.0
+
+# NumPy - pinned to avoid wheel compatibility issues
+numpy>=1.25.0,<2.5
+
+# =============================================================================
+# Windows-Specific Dependencies
+# =============================================================================
+pywin32>=306; sys_platform == "win32"
+
+# =============================================================================
+# Transitive Dependencies (explicit to prevent conflicts)
+# =============================================================================
+rpds-py>=0.18.0
+referencing>=0.35.0
+jsonschema>=4.22.0
+packaging>=23.0
