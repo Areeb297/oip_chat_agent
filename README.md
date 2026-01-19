@@ -653,6 +653,131 @@ gcloud run deploy oip-agent \
 
 ---
 
+---
+
+## Frontend (Next.js Chat UI)
+
+A modern chat interface built with Next.js 15 and ShadCN UI for interacting with the OIP Assistant.
+
+### Frontend Tech Stack
+
+| Component | Technology |
+|-----------|------------|
+| Framework | Next.js 15 (App Router) |
+| UI Components | ShadCN UI |
+| Styling | Tailwind CSS v4 |
+| Language | TypeScript |
+| Icons | Lucide React |
+| State Management | React Hooks |
+
+### Frontend Features
+
+- **Embeddable Chat Widget**: Floating chat icon with popup window
+- **Full-Screen Chat**: Dedicated `/chat` page with sidebar
+- **SSE Streaming**: Real-time streaming responses from the backend
+- **Chat History**: Persistent local storage for conversation history
+- **OIP Branding**: Colors matching the OIP application screenshots
+
+### Run the Frontend
+
+```bash
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Run development server
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000) to view the chat interface.
+
+### Frontend Directory Structure
+
+```
+frontend/
+├── src/
+│   ├── app/
+│   │   ├── page.tsx          # Home page with embedded widget
+│   │   ├── chat/
+│   │   │   └── page.tsx      # Full-screen chat page
+│   │   ├── layout.tsx        # Root layout
+│   │   └── globals.css       # OIP theme colors
+│   │
+│   ├── components/
+│   │   ├── chatbot/          # Chat components
+│   │   │   ├── ChatWidget.tsx
+│   │   │   ├── ChatPopup.tsx
+│   │   │   ├── ChatMessages.tsx
+│   │   │   ├── ChatInput.tsx
+│   │   │   ├── ChatHeader.tsx
+│   │   │   ├── ChatSidebar.tsx
+│   │   │   └── ChatFullScreen.tsx
+│   │   └── ui/               # ShadCN UI components
+│   │
+│   ├── hooks/
+│   │   ├── useChat.ts        # Chat state + SSE streaming
+│   │   └── useChatHistory.ts # Local storage persistence
+│   │
+│   ├── lib/
+│   │   ├── api.ts            # API client for backend
+│   │   └── utils.ts          # Utilities
+│   │
+│   ├── config/
+│   │   └── api.config.ts     # Backend URL configuration
+│   │
+│   └── types/
+│       └── chat.ts           # TypeScript interfaces
+│
+├── .env.local                # NEXT_PUBLIC_API_URL
+└── package.json
+```
+
+### Embedding the Chat Widget
+
+```tsx
+import { ChatWidget } from '@/components/chatbot';
+
+export default function YourPage() {
+  return (
+    <div>
+      {/* Your page content */}
+      <ChatWidget position="bottom-right" />
+    </div>
+  );
+}
+```
+
+### Environment Variables
+
+Create `frontend/.env.local`:
+```env
+NEXT_PUBLIC_API_URL=http://localhost:8080
+```
+
+---
+
+## Running Full Stack
+
+1. **Start Backend** (Terminal 1):
+   ```bash
+   # From project root
+   python main.py
+   # Server runs at http://localhost:8080
+   ```
+
+2. **Start Frontend** (Terminal 2):
+   ```bash
+   cd frontend
+   npm run dev
+   # UI runs at http://localhost:3000
+   ```
+
+3. **Open Browser**: Navigate to `http://localhost:3000`
+
+---
+
 ## Future Enhancements
 
 - [ ] Hybrid search (BM25 + vector)
@@ -660,6 +785,7 @@ gcloud run deploy oip-agent \
 - [ ] Conversation memory
 - [ ] Document update detection
 - [ ] Multi-language embeddings
+- [ ] Voice input support
 
 ---
 

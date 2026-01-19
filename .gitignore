@@ -72,3 +72,7 @@ htmlcov/
 
 # mypy
 .mypy_cache/
+
+
+# OIP Images
+/OIP_images

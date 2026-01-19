@@ -101,18 +101,19 @@ async def chat(request: ChatRequest):
         parts=[types.Part.from_text(text=request.message)],
     )
 
-    # Run the agent and collect response
+    # Run the agent and collect only FINAL response (not thinking/routing)
     response_text = ""
     async for event in runner.run_async(
         user_id=user_id,
         session_id=session_id,
         new_message=user_content,
     ):
-        # Collect text from agent responses
-        if hasattr(event, "content") and event.content:
-            for part in event.content.parts:
-                if hasattr(part, "text") and part.text:
-                    response_text += part.text
+        # Only collect text from FINAL responses (filters out thinking process)
+        if event.is_final_response():
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if hasattr(part, "text") and part.text:
+                        response_text = part.text  # Use last final response
 
     return ChatResponse(response=response_text, session_id=session_id)
 
@@ -169,11 +170,12 @@ async def run_sse(request: RunSSERequest):
                 session_id=session_id,
                 new_message=user_content,
             ):
-                if hasattr(event, "content") and event.content:
-                    for part in event.content.parts:
-                        if hasattr(part, "text") and part.text:
-                            data = {"text": part.text}
-                            yield f"data: {json.dumps(data)}\n\n"
+                if event.is_final_response():
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                data = {"text": part.text}
+                                yield f"data: {json.dumps(data)}\n\n"
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
@@ -188,10 +190,11 @@ async def run_sse(request: RunSSERequest):
             session_id=session_id,
             new_message=user_content,
         ):
-            if hasattr(event, "content") and event.content:
-                for part in event.content.parts:
-                    if hasattr(part, "text") and part.text:
-                        response_text += part.text
+            if event.is_final_response():
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if hasattr(part, "text") and part.text:
+                            response_text = part.text
 
         return {
             "response": response_text,
