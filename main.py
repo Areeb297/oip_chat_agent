@@ -63,11 +63,13 @@ class RunSSERequest(BaseModel):
     username: str = Field(..., description="Required: logged-in user's username")
     userRole: Optional[str] = Field(default=None, alias="userRole")
     userRoleCode: Optional[str] = Field(default=None, alias="userRoleCode")
-    # Support multiple projects/teams as arrays or comma-separated strings
+    # Support multiple projects/teams/regions as arrays or comma-separated strings
     projectNames: Optional[List[str]] = Field(default=None, alias="projectNames")
     projectCode: Optional[str] = Field(default=None, alias="projectCode")  # Legacy single project
     teamNames: Optional[List[str]] = Field(default=None, alias="teamNames")
     team: Optional[str] = Field(default=None)  # Legacy single team
+    regionNames: Optional[List[str]] = Field(default=None, alias="regionNames")
+    region: Optional[str] = Field(default=None)  # Legacy single region
 
     class Config:
         populate_by_name = True
@@ -107,6 +109,15 @@ async def chat(request: ChatRequest):
     project_names_csv = _list_to_csv(request.project_names)
     team_names_csv = _list_to_csv(request.team_names)
 
+    # Build user context state
+    # Use empty string instead of None to ensure ADK state properly clears old values
+    user_state = {
+        "username": request.username,
+        "projectCode": project_names_csv if project_names_csv else "",
+        "team": team_names_csv if team_names_csv else "",
+        "user:username": request.username,  # Persist across sessions
+    }
+
     # Get or create session (async methods)
     session = await session_service.get_session(
         app_name="oip_assistant",
@@ -119,13 +130,11 @@ async def chat(request: ChatRequest):
             app_name="oip_assistant",
             user_id=user_id,
             session_id=session_id,
-            state={
-                "username": request.username,
-                "projectCode": project_names_csv,
-                "team": team_names_csv,
-                "user:username": request.username,  # Persist across sessions
-            },
+            state=user_state,
         )
+    else:
+        # Update existing session state with current project/team selection
+        session.state.update(user_state)
 
     # Create user message content
     user_content = types.Content(
@@ -166,6 +175,9 @@ async def new_session():
 @app.post("/run_sse")
 async def run_sse(request: RunSSERequest):
     """ADK-compatible endpoint for running agent (matches adk web format)"""
+    # Debug: Log raw request
+    print(f"[RAW REQUEST] Full request object: {request.model_dump()}")
+
     user_id = request.userId
     session_id = request.sessionId
     username = request.username
@@ -184,8 +196,30 @@ async def run_sse(request: RunSSERequest):
     elif request.team:
         team_names_csv = request.team
 
+    # Handle multiple regions - prefer regionNames array, fallback to region
+    region_names_csv = None
+    if request.regionNames and len(request.regionNames) > 0:
+        region_names_csv = ",".join(request.regionNames)
+    elif request.region:
+        region_names_csv = request.region
+
     # Log user context for debugging/testing
-    print(f"[USER CONTEXT] username={username}, role={request.userRole}, projects={project_names_csv}, teams={team_names_csv}")
+    print(f"[USER CONTEXT] username={username}, role={request.userRole}")
+    print(f"[USER CONTEXT] Raw request - projectNames={request.projectNames}, teamNames={request.teamNames}, regionNames={request.regionNames}")
+    print(f"[USER CONTEXT] Raw request - projectCode={request.projectCode}, team={request.team}, region={request.region}")
+    print(f"[USER CONTEXT] Resolved - projects={project_names_csv}, teams={team_names_csv}, regions={region_names_csv}")
+
+    # Build user context state
+    # Use empty string instead of None to ensure ADK state properly clears old values
+    user_state = {
+        "username": username,
+        "userRole": request.userRole,
+        "userRoleCode": request.userRoleCode,
+        "projectCode": project_names_csv if project_names_csv else "",
+        "team": team_names_csv if team_names_csv else "",
+        "region": region_names_csv if region_names_csv else "",
+        "user:username": username,  # Persist across sessions
+    }
 
     # Get or create session (async methods)
     session = await session_service.get_session(
@@ -199,21 +233,34 @@ async def run_sse(request: RunSSERequest):
             app_name="oip_assistant",
             user_id=user_id,
             session_id=session_id,
-            state={
-                "username": username,
-                "userRole": request.userRole,
-                "userRoleCode": request.userRoleCode,
-                "projectCode": project_names_csv,
-                "team": team_names_csv,
-                "user:username": username,  # Persist across sessions
-            },
+            state=user_state,
         )
+    else:
+        # Update existing session state with current project/team selection
+        # This allows users to change filters mid-session
+        print(f"[SESSION UPDATE] Updating existing session {session_id} with: {user_state}")
+        session.state.update(user_state)
+        print(f"[SESSION UPDATE] Session state after update: {dict(session.state)}")
 
     # Extract text from message parts
     message_text = ""
     for part in request.newMessage.parts:
         if part.text:
             message_text += part.text
+
+    # Inject current filter context into the message so agent always knows the active filters
+    # This ensures dropdown selections are respected regardless of session state timing issues
+    filter_context = ""
+    if team_names_csv:
+        filter_context += f"[ACTIVE_TEAM_FILTER: {team_names_csv}] "
+    if project_names_csv:
+        filter_context += f"[ACTIVE_PROJECT_FILTER: {project_names_csv}] "
+    if region_names_csv:
+        filter_context += f"[ACTIVE_REGION_FILTER: {region_names_csv}] "
+
+    if filter_context:
+        message_text = f"{filter_context}{message_text}"
+        print(f"[FILTER INJECTION] Added filter context to message: {filter_context}")
 
     # Create user message content
     user_content = types.Content(

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import type { Message, ChatSession, UserContext } from '@/types/chat';
 import { sendStreamingMessage, createSession } from '@/lib/api';
@@ -24,6 +24,16 @@ export function useChat(options: UseChatOptions = {}) {
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const streamingMessageRef = useRef<string>('');
+
+  // Use ref to always get the latest userContext value
+  // This ensures sendMessage callback always has access to current context
+  const userContextRef = useRef<UserContext | undefined>(options.userContext);
+
+  // Keep the ref updated when userContext changes
+  useEffect(() => {
+    console.log('[useChat] userContext updated:', options.userContext);
+    userContextRef.current = options.userContext;
+  }, [options.userContext]);
 
   const initSession = useCallback(async () => {
     try {
@@ -118,8 +128,8 @@ export function useChat(options: UseChatOptions = {}) {
             setIsLoading(false);
             setLoadingStatus('');
           },
-          // userContext
-          options.userContext,
+          // userContext - use ref to get latest value
+          userContextRef.current,
           // onStatus
           (status: string) => {
             setLoadingStatus(status);
@@ -130,7 +140,7 @@ export function useChat(options: UseChatOptions = {}) {
         setIsLoading(false);
       }
     },
-    [isLoading, sessionId, options.userContext]
+    [isLoading, sessionId]
   );
 
   const clearMessages = useCallback(() => {

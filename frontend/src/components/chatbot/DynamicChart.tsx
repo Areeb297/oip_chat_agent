@@ -108,8 +108,23 @@ const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, per
 };
 
 export function DynamicChart({ config }: DynamicChartProps) {
-  const { type, title, description, figureLabel, data, xKey, series, insights, styling } = config;
+  const {
+    type,
+    title,
+    description,
+    figureLabel,
+    data = [],
+    xKey,
+    series = [],
+    insights = [],
+    styling
+  } = config || {};
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Early return if no config or data
+  if (!config || !type) {
+    return <div className="p-4 text-slate-500">Invalid chart configuration</div>;
+  }
 
   // Handle Escape key to close fullscreen
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
@@ -132,6 +147,9 @@ export function DynamicChart({ config }: DynamicChartProps) {
 
   // Get colors from data or series
   const colors = useMemo(() => {
+    if (!data || data.length === 0) {
+      return series.map((s) => s.color);
+    }
     if (data[0]?.color) {
       return data.map((d) => d.color as string);
     }

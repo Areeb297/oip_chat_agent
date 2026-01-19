@@ -85,13 +85,144 @@ def get_current_date() -> dict:
     }
 
 
+def get_lookups(
+    lookup_type: Optional[str] = None,
+    tool_context: "ToolContext" = None,
+) -> dict:
+    """
+    Get lookup data from the database (regions, projects, teams, statuses).
+
+    This tool retrieves reference data for dropdowns, validation, and queries.
+    Use this when users ask "what regions are there?" or "list all teams".
+
+    IMPORTANT: lookup_type values are CASE-SENSITIVE and must be EXACTLY one of:
+    - "Regions" (capital R, plural) - Get all regions/provinces
+    - "Projects" (capital P, plural) - Get all projects
+    - "Teams" (capital T, plural) - Get all teams with their project and region
+    - "Statuses" (capital S, plural) - Get ticket statuses
+    - "All" (capital A) - Get all lookup types
+    - None - Same as "All", gets everything
+
+    Args:
+        lookup_type: MUST be exactly one of: "Regions", "Projects", "Teams", "Statuses", "All"
+                     DO NOT use lowercase like "region" or "teams" - it will return empty!
+
+    Returns:
+        dict: Lookup data containing requested types:
+            - regions: List of {RegionId, RegionName, RegionCode}
+            - projects: List of {ProjectId, ProjectName}
+            - teams: List of {TeamId, TeamName, ProjectName, RegionName}
+            - statuses: List of {StatusId, StatusCode, StatusName, StatusColor}
+            - Message: "Success" or error description
+
+    Example tool calls:
+        - "What regions are available?" -> get_lookups(lookup_type="Regions")
+        - "List all teams" -> get_lookups(lookup_type="Teams")
+        - "What projects can I filter by?" -> get_lookups(lookup_type="Projects")
+        - "Show me ticket statuses" -> get_lookups(lookup_type="Statuses")
+        - "Show all lookup data" -> get_lookups(lookup_type="All")
+    """
+    try:
+        logger.info(f"📋 Fetching lookups: {lookup_type or 'All'}")
+        print(f"🔍 [LOOKUPS] lookup_type={lookup_type}")
+
+        # Get username from session state for permission filtering
+        username = None
+        if tool_context is not None:
+            username = tool_context.state.get("username")
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Build parameter list
+        params = []
+        param_markers = []
+
+        if lookup_type:
+            params.append(lookup_type)
+            param_markers.append('@LookupType=?')
+
+        if username:
+            params.append(username)
+            param_markers.append('@Username=?')
+
+        # Execute stored procedure
+        if param_markers:
+            sql = f"EXEC usp_Chatbot_GetLookups {', '.join(param_markers)}"
+        else:
+            sql = "EXEC usp_Chatbot_GetLookups"
+
+        logger.info("🔄 Querying lookup data...")
+        cursor.execute(sql, params)
+
+        result = {"Message": "Success"}
+
+        # Process multiple result sets
+        result_index = 0
+        result_names = ["regions", "projects", "teams", "statuses"]
+
+        while True:
+            rows = cursor.fetchall()
+            if rows:
+                columns = [column[0] for column in cursor.description]
+                data = [dict(zip(columns, row)) for row in rows]
+
+                # Determine which result set this is based on columns
+                if "RegionId" in columns or "RegionName" in columns:
+                    result["regions"] = data
+                elif "ProjectId" in columns and "TeamId" not in columns:
+                    result["projects"] = data
+                elif "TeamId" in columns:
+                    result["teams"] = data
+                elif "StatusId" in columns:
+                    result["statuses"] = data
+                else:
+                    # Fallback: use index-based naming
+                    if result_index < len(result_names):
+                        result[result_names[result_index]] = data
+
+                result_index += 1
+
+            # Try to move to next result set
+            if not cursor.nextset():
+                break
+
+        cursor.close()
+        conn.close()
+
+        # Log what we got
+        for key in ["regions", "projects", "teams", "statuses"]:
+            if key in result:
+                print(f"📋 [LOOKUPS] {key}: {len(result[key])} items")
+
+        # Store in session for future reference
+        if tool_context is not None:
+            tool_context.state["available_lookups"] = result
+            logger.info("📝 Lookups stored in session")
+
+        return result
+
+    except pyodbc.Error as db_error:
+        print(f"❌ [DB ERROR] {db_error}")
+        import traceback
+        traceback.print_exc()
+        return {"Message": f"Database error: {str(db_error)}"}
+    except Exception as e:
+        print(f"❌ [ERROR] {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"Message": f"Error: {type(e).__name__}: {str(e)}"}
+
+
 def get_ticket_summary(
     project_names: Optional[str] = None,
     team_names: Optional[str] = None,
+    region_names: Optional[str] = None,
     month: Optional[int] = None,
     year: Optional[int] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    include_breakdown: bool = False,
     tool_context: "ToolContext" = None,
 ) -> dict:
     """
@@ -113,6 +244,11 @@ def get_ticket_summary(
                     Can be a single team like "Maintenance" or multiple
                     comma-separated teams like "Maintenance,Test Team".
                     Case-insensitive partial match supported.
+        region_names: Filter by region name(s). Optional.
+                      Can be a single region like "Riyadh" or multiple
+                      comma-separated regions like "Riyadh,Jeddah".
+                      Case-insensitive partial match supported.
+                      Examples: "Riyadh", "Eastern Province", "Makkah,Madinah"
         month: Filter by month (1-12). Optional.
                Use with year parameter for monthly filtering.
         year: Filter by year (e.g., 2025, 2026). Optional.
@@ -121,6 +257,9 @@ def get_ticket_summary(
                    Example: "2026-01-01"
         date_to: End date for range filter in YYYY-MM-DD format. Optional.
                  Example: "2026-01-19"
+        include_breakdown: If True, returns additional breakdown by region, project, team.
+                          Use this for "X vs Others" comparisons or distribution charts.
+                          Example: "Riyadh vs other regions" -> include_breakdown=True
 
     Returns:
         dict: Ticket summary containing:
@@ -135,18 +274,30 @@ def get_ticket_summary(
             - UserRole: User's role (Engineer/Supervisor/Admin/PM)
             - ProjectFilter: Applied project filter or "All Projects"
             - TeamFilter: Applied team filter or "All Teams"
+            - RegionFilter: Applied region filter or "All Regions"
             - DateRange: Applied date range or "All Time"
             - Message: "Success" or error description
+
+            If include_breakdown=True, also includes:
+            - by_region: List of {RegionName, TotalTickets, OpenTickets, CompletedTickets}
+            - by_project: List of {ProjectName, TotalTickets, OpenTickets, CompletedTickets}
+            - by_team: List of {TeamName, TotalTickets, OpenTickets, CompletedTickets}
 
     Example queries this tool can answer:
         - "What are my tickets?" -> No filters needed
         - "How are my ANB tickets?" -> project_names='ANB'
         - "Show me ANB and Barclays tickets" -> project_names='ANB,Barclays'
         - "Show me Maintenance team status" -> team_names='Maintenance'
+        - "Tickets in Riyadh" -> region_names='Riyadh'
+        - "Tickets in Eastern Province" -> region_names='Eastern Province'
+        - "Riyadh and Jeddah tickets" -> region_names='Riyadh,Jeddah'
         - "My tickets this month" -> month=1 + year=2026
         - "Tickets from last month" -> month=12 + year=2025
         - "Tickets last week" -> date_from='2026-01-12' + date_to='2026-01-19'
         - "ANB project tickets in December" -> project_names='ANB' + month=12 + year=2025
+        - "Riyadh vs other regions" -> include_breakdown=True (then aggregate)
+        - "Show tickets by region" -> include_breakdown=True
+        - "Compare projects" -> include_breakdown=True
 
     Note:
         The stored procedure enforces role-based access control:
@@ -156,6 +307,8 @@ def get_ticket_summary(
     """
     try:
         logger.info("📊 Checking your ticket status...")
+        # Debug: Log incoming parameters
+        print(f"🔍 [TOOL PARAMS] project_names={project_names}, team_names={team_names}, region_names={region_names}, month={month}, year={year}, include_breakdown={include_breakdown}")
 
         # Get username from session state via tool_context
         username = None
@@ -164,15 +317,16 @@ def get_ticket_summary(
 
         if tool_context is not None:
             username = tool_context.state.get("username")
-            # Also get project/team context from session if not overridden by query
-            if project_names is None:
-                project_context = tool_context.state.get("projectCode")
-                if project_context:
-                    project_names = project_context
-            if team_names is None:
-                team_context = tool_context.state.get("team")
-                if team_context:
-                    team_names = team_context
+
+            # NOTE: We NO LONGER use session state for project/team filters
+            # The filter context is now injected directly into the message via [ACTIVE_TEAM_FILTER] tags
+            # The LLM reads these tags and passes the correct team_names/project_names to this tool
+            # This avoids ADK session state timing issues
+
+            print(f"🔍 [LLM PARAMS] project_names={project_names}, team_names={team_names}, region_names={region_names}")
+
+        # Log final values used for query
+        print(f"🔍 [QUERY] username={username}, project_names={project_names}, team_names={team_names}, region_names={region_names}")
 
         # Username is required - error if not found
         if not username:
@@ -199,6 +353,10 @@ def get_ticket_summary(
             params.append(team_names)
             param_markers.append('@TeamNames=?')
 
+        if region_names:
+            params.append(region_names)
+            param_markers.append('@RegionNames=?')
+
         if month is not None:
             params.append(month)
             param_markers.append('@Month=?')
@@ -218,12 +376,16 @@ def get_ticket_summary(
             params.append(date_to)
             param_markers.append('@DateTo=?')
 
+        if include_breakdown:
+            params.append(1)
+            param_markers.append('@IncludeBreakdown=?')
+
         # Execute stored procedure
         sql = f"EXEC usp_Chatbot_GetTicketSummary {', '.join(param_markers)}"
         logger.info("🔄 Analyzing ticket data...")
         cursor.execute(sql, params)
 
-        # Fetch result
+        # Fetch result (first result set is always the summary)
         row = cursor.fetchone()
         logger.info("✅ Ticket summary ready")
 
@@ -255,6 +417,41 @@ def get_ticket_summary(
                 "Message": "No tickets found matching the criteria"
             }
 
+        # If include_breakdown=True, fetch additional result sets
+        # SP returns in fixed order: by_region, by_project, by_team
+        if include_breakdown:
+            breakdown_order = ["by_region", "by_project", "by_team"]
+            breakdown_index = 0
+
+            while cursor.nextset():
+                rows = cursor.fetchall()
+                if rows and cursor.description:
+                    columns = [column[0] for column in cursor.description]
+                    data = []
+                    for r in rows:
+                        row_dict = dict(zip(columns, r))
+                        # Convert numeric fields and Decimal to proper types
+                        for key in row_dict:
+                            val = row_dict[key]
+                            if val is not None:
+                                # Handle Decimal type
+                                if hasattr(val, 'as_tuple'):  # Decimal check
+                                    row_dict[key] = float(val)
+                                elif isinstance(val, (int, float)) or 'Tickets' in key:
+                                    try:
+                                        row_dict[key] = int(val) if isinstance(val, int) or (isinstance(val, float) and val.is_integer()) else float(val)
+                                    except (ValueError, TypeError):
+                                        pass
+                        data.append(row_dict)
+
+                    # Use fixed order from SP
+                    if breakdown_index < len(breakdown_order):
+                        key = breakdown_order[breakdown_index]
+                        result[key] = data
+                        print(f"📊 [BREAKDOWN] {key}: {len(data)} items")
+
+                    breakdown_index += 1
+
         cursor.close()
         conn.close()
 
@@ -269,6 +466,8 @@ def get_ticket_summary(
                 query_context_parts.append(f"project {project_names}")
             if team_names:
                 query_context_parts.append(f"team {team_names}")
+            if region_names:
+                query_context_parts.append(f"region {region_names}")
             if month:
                 query_context_parts.append(f"month {month}")
             tool_context.state["last_query_context"] = " ".join(query_context_parts) if query_context_parts else "all tickets"
@@ -277,14 +476,20 @@ def get_ticket_summary(
         return result
 
     except pyodbc.Error as db_error:
+        print(f"❌ [DB ERROR] {db_error}")
+        import traceback
+        traceback.print_exc()
         return {
             "TotalTickets": 0,
             "Message": f"Database error: {str(db_error)}"
         }
     except Exception as e:
+        print(f"❌ [ERROR] {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return {
             "TotalTickets": 0,
-            "Message": f"Error: {str(e)}"
+            "Message": f"Error: {type(e).__name__}: {str(e)}"
         }
 
 

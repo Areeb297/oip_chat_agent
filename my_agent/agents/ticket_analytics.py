@@ -10,13 +10,14 @@ from datetime import datetime
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
-from ..tools.db_tools import get_ticket_summary, get_current_date, create_chart_from_session
+from ..tools.db_tools import get_ticket_summary, get_current_date, create_chart_from_session, get_lookups
 from ..tools.chart_tools import (
     create_chart,
     create_ticket_status_chart,
     create_completion_rate_gauge,
     create_tickets_over_time_chart,
-    create_project_comparison_chart
+    create_project_comparison_chart,
+    create_breakdown_chart,
 )
 from ..prompts.templates import Prompts
 
@@ -91,6 +92,14 @@ Chart visualized above. You have 5 suspended tickets.
 ### 1. Database Tools (Get Data)
 - `get_ticket_summary` - Retrieves ticket statistics from the TickTraq database
 - `get_current_date` - Returns current date information
+- `get_lookups` - Retrieves reference data (regions, projects, teams, statuses)
+  - Use when users ask "what regions are there?", "list all teams", "what projects can I filter by?"
+  - **CRITICAL: lookup_type is CASE-SENSITIVE and must be EXACTLY one of:**
+    - `"Regions"` (capital R, plural) - NOT "region" or "Region"
+    - `"Projects"` (capital P, plural) - NOT "project" or "Project"
+    - `"Teams"` (capital T, plural) - NOT "team" or "Team"
+    - `"Statuses"` (capital S, plural) - NOT "status" or "Status"
+    - `"All"` (capital A) - Get everything
 
 ### 2. Session-Aware Chart Tool (FLEXIBLE for ANY visualization)
 - `create_chart_from_session` - Creates a chart using data stored in session
@@ -296,15 +305,78 @@ Here's your ticket status distribution. You have 15 tickets total with a 47% com
 The `get_ticket_summary` tool accepts:
 - **project_names** (optional): Filter by project name(s). Can be single ("ANB") or multiple comma-separated ("ANB,Barclays")
 - **team_names** (optional): Filter by team name(s). Can be single ("Maintenance") or multiple comma-separated ("Maintenance,Test Team")
+- **region_names** (optional): Filter by region name(s). Can be single ("Riyadh") or multiple comma-separated ("Riyadh,Jeddah"). Examples: "Eastern Province", "Makkah,Madinah"
 - **month** (optional): Month number 1-12
 - **year** (optional): Year like 2025, 2026
 - **date_from** (optional): Start date in YYYY-MM-DD format
 - **date_to** (optional): End date in YYYY-MM-DD format
+- **include_breakdown** (optional): Set to True to get breakdown by region/project/team
+  - Returns additional fields: `by_region`, `by_project`, `by_team`
+  - Each is a list of {{RegionName/ProjectName/TeamName, TotalTickets, OpenTickets, CompletedTickets}}
+  - Use this for "X vs Others" comparisons, distribution charts, or regional analysis
 
 The `get_current_date` tool returns current date information - use it if you need to know today's date.
 
 NOTE: The username is automatically retrieved from the session - you don't need to pass it.
-NOTE: If project/team context was provided in the session (user selected a project in UI), it will be used as default.
+
+## Breakdown Charts (SIMPLEST WAY to chart by region/project/team)
+
+**PREFERRED TOOL: `create_breakdown_chart`** - One simple call!
+
+### Step 1: Get data with breakdown
+```
+get_ticket_summary(include_breakdown=True)
+```
+
+### Step 2: Create chart with ONE simple call
+```
+create_breakdown_chart(breakdown_type="project")  # Chart by project
+create_breakdown_chart(breakdown_type="region")   # Chart by region
+create_breakdown_chart(breakdown_type="team")     # Chart by team
+```
+
+### Examples:
+
+**User:** "Chart tickets by project"
+→ `get_ticket_summary(include_breakdown=True)`
+→ `create_breakdown_chart(breakdown_type="project")`
+
+**User:** "Pie chart by region"
+→ `get_ticket_summary(include_breakdown=True)`
+→ `create_breakdown_chart(breakdown_type="region", chart_type="pie")`
+
+**User:** "Show open tickets by team"
+→ `get_ticket_summary(include_breakdown=True)`
+→ `create_breakdown_chart(breakdown_type="team", metric="OpenTickets")`
+
+### Parameters for create_breakdown_chart:
+- **breakdown_type**: "project", "region", or "team" (REQUIRED)
+- **chart_type**: "bar" or "pie" (default: "bar")
+- **metric**: "TotalTickets", "OpenTickets", "CompletedTickets" (default: "TotalTickets")
+- **title**: Custom title (auto-generated if not provided)
+
+## CRITICAL: Active Filter Tags (UI Dropdown Selections)
+
+User messages may contain filter tags from UI dropdown selections:
+- `[ACTIVE_TEAM_FILTER: TeamName]` - User has selected this team in the dropdown
+- `[ACTIVE_PROJECT_FILTER: ProjectName]` - User has selected this project in the dropdown
+- `[ACTIVE_REGION_FILTER: RegionName]` - User has selected this region in the dropdown
+
+**YOU MUST USE THESE FILTERS when calling get_ticket_summary!**
+
+Examples:
+- User message: `[ACTIVE_TEAM_FILTER: Maintenance] fetch my tickets`
+- You MUST call: `get_ticket_summary(team_names="Maintenance")`
+
+- User message: `[ACTIVE_REGION_FILTER: Riyadh] show my tickets`
+- You MUST call: `get_ticket_summary(region_names="Riyadh")`
+
+- User message: `[ACTIVE_TEAM_FILTER: Maintenance] [ACTIVE_REGION_FILTER: Riyadh] fetch tickets`
+- You MUST call: `get_ticket_summary(team_names="Maintenance", region_names="Riyadh")`
+
+If no filter tag is present, use any filters the user mentions in their message, or query all teams/projects/regions if not specified.
+
+**IMPORTANT**: These filter tags represent the user's CURRENT UI selection. They take PRIORITY over any previous conversation context.
 
 ## ReAct Reasoning Process
 
@@ -467,19 +539,32 @@ Use this agent for questions like:
 - "Tickets from last month"
 - "My completion rate"
 - "Show me ANB and Barclays tickets"
+- "Tickets in Riyadh region"
+- "Show tickets for Eastern Province"
+- "How are my Jeddah tickets?"
 - "Show me a chart of my tickets"
 - "Visualize my ticket status"
 - "Graph my completion rate"
 - "Plot my ticket breakdown"
 - "Compare my projects visually"
+- "What regions are available?"
+- "List all teams"
+- "What projects can I filter by?"
+- "Show me ticket statuses"
+- "Riyadh vs other regions"
+- "Show tickets by region"
+- "Compare ANB vs other projects"
+- "Tickets per team breakdown"
 """,
     tools=[
         # Database tools
         get_ticket_summary,
         get_current_date,
-        # Session-aware chart tool (PREFERRED for "chart the above")
+        get_lookups,
+        # Session-aware chart tools (PREFERRED - use breakdown data from session)
         create_chart_from_session,
-        # Direct chart tools (for NEW chart requests with data)
+        create_breakdown_chart,  # SIMPLE: just pass breakdown_type="project"/"region"/"team"
+        # Direct chart tools (for custom data)
         create_chart,
         create_ticket_status_chart,
         create_completion_rate_gauge,

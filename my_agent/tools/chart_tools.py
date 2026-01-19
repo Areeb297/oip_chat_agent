@@ -647,6 +647,111 @@ def create_project_comparison_chart(
     )
 
 
+def create_breakdown_chart(
+    breakdown_type: str,
+    chart_type: str = "bar",
+    metric: str = "TotalTickets",
+    title: str = None,
+    tool_context = None,
+) -> str:
+    """
+    Create a chart from breakdown data stored in session.
+
+    SIMPLE TOOL: Just specify the breakdown type and this creates the chart.
+    Uses data from the last get_ticket_summary(include_breakdown=True) call.
+
+    Args:
+        breakdown_type: Which breakdown to chart. MUST be one of:
+                       - "region" or "by_region" - Chart by region
+                       - "project" or "by_project" - Chart by project
+                       - "team" or "by_team" - Chart by team
+        chart_type: Chart type - "bar" or "pie" (default: "bar")
+        metric: Which metric to chart - "TotalTickets", "OpenTickets", "CompletedTickets"
+                (default: "TotalTickets")
+        title: Custom title (auto-generated if not provided)
+        tool_context: ADK ToolContext for session access
+
+    Returns:
+        str: Chart HTML with embedded JSON configuration
+
+    Example calls:
+        - "Chart by project" -> create_breakdown_chart(breakdown_type="project")
+        - "Pie chart by region" -> create_breakdown_chart(breakdown_type="region", chart_type="pie")
+        - "Open tickets by team" -> create_breakdown_chart(breakdown_type="team", metric="OpenTickets")
+    """
+    if tool_context is None:
+        return "<p><span style='color:#dc2626'>Error: No session context available.</span></p>"
+
+    # Get last ticket data from session
+    last_data = tool_context.state.get("last_ticket_data")
+
+    if not last_data:
+        return """<p><span style='color:#f59e0b'>⚠️ No previous ticket data found.</span></p>
+<p>Please ask for ticket data first with include_breakdown=True (e.g., "show tickets by project").</p>"""
+
+    # Normalize breakdown_type
+    type_map = {
+        "region": "by_region",
+        "regions": "by_region",
+        "by_region": "by_region",
+        "project": "by_project",
+        "projects": "by_project",
+        "by_project": "by_project",
+        "team": "by_team",
+        "teams": "by_team",
+        "by_team": "by_team",
+    }
+
+    key = type_map.get(breakdown_type.lower(), breakdown_type)
+
+    # Get the breakdown data
+    breakdown_data = last_data.get(key)
+
+    if not breakdown_data:
+        available = [k for k in ["by_region", "by_project", "by_team"] if k in last_data]
+        return f"""<p><span style='color:#dc2626'>Error: No '{key}' data found in session.</span></p>
+<p>Available breakdowns: {', '.join(available) if available else 'None - call get_ticket_summary with include_breakdown=True'}</p>"""
+
+    # Determine the name key based on breakdown type
+    name_key_map = {
+        "by_region": "RegionName",
+        "by_project": "ProjectName",
+        "by_team": "TeamName",
+    }
+    name_key = name_key_map.get(key, "name")
+
+    # Auto-generate title if not provided
+    if not title:
+        type_label = key.replace("by_", "").title()
+        metric_label = metric.replace("Tickets", " Tickets")
+        title = f"{metric_label} by {type_label}"
+
+    print(f"📊 [BREAKDOWN CHART] type={key}, metric={metric}, items={len(breakdown_data)}")
+
+    # Transform data for chart
+    chart_data = []
+    for item in breakdown_data:
+        name = item.get(name_key, "Unknown")
+        value = item.get(metric, 0)
+        # Handle potential Decimal values
+        if hasattr(value, 'as_tuple'):
+            value = float(value)
+        chart_data.append({
+            "category": name,
+            "value": value
+        })
+
+    # Create the chart
+    return create_chart(
+        data=chart_data,
+        title=title,
+        x_key="category",
+        y_keys=["value"],
+        chart_type=chart_type,
+        description=f"{title} ({len(chart_data)} items)"
+    )
+
+
 # For testing
 if __name__ == "__main__":
     # Test ticket status chart

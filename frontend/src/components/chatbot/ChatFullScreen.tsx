@@ -51,6 +51,10 @@ export function ChatFullScreen() {
       username,
       userRole: roleName,
       userRoleCode: roleCode,
+      // Convert single values to arrays for the new API format
+      projectNames: projectCode ? [projectCode] : null,
+      teamNames: team ? [team] : null,
+      // Also keep legacy fields for backwards compatibility
       projectCode,
       team,
     },

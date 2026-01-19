@@ -35,20 +35,33 @@ export interface RunSSERequest {
     parts: { text: string }[];
   };
   streaming: boolean;
-  // User context parameters
-  username?: string;
+  // User context parameters (required)
+  username: string;
+  // Optional user context
   userRole?: string | null;
   userRoleCode?: string | null;
+  // Support multiple projects/teams/regions as arrays
+  projectNames?: string[] | null;
+  teamNames?: string[] | null;
+  regionNames?: string[] | null;
+  // Legacy single project/team/region (fallback)
   projectCode?: string | null;
   team?: string | null;
+  region?: string | null;
 }
 
 export interface UserContext {
   username: string | null;
   userRole: string | null;
   userRoleCode: string | null;
-  projectCode: string | null;
-  team: string | null;
+  // Support multiple projects/teams/regions
+  projectNames?: string[] | null;
+  teamNames?: string[] | null;
+  regionNames?: string[] | null;
+  // Legacy single project/team/region
+  projectCode?: string | null;
+  team?: string | null;
+  region?: string | null;
 }
 
 export interface SSEData {

@@ -483,7 +483,7 @@ Server runs at `http://localhost:8080`
 
 ---
 
-### Endpoint 1: `/run_sse` (ADK-Compatible)
+### Endpoint 1: `/run_sse` (ADK-Compatible with User Context)
 
 **Request:**
 ```json
@@ -493,9 +493,14 @@ Server runs at `http://localhost:8080`
   "sessionId": "session_abc",
   "newMessage": {
     "role": "user",
-    "parts": [{"text": "What is OIP?"}]
+    "parts": [{"text": "What are my tickets?"}]
   },
-  "streaming": false
+  "streaming": true,
+  "username": "john.doe",
+  "userRole": "Engineer",
+  "userRoleCode": "ENG",
+  "projectNames": ["ANB", "Barclays"],
+  "teamNames": ["Maintenance", "Support"]
 }
 ```
 
@@ -503,26 +508,41 @@ Server runs at `http://localhost:8080`
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `appName` | string | Yes | Agent application name. Use `"my_agent"` for this project. |
-| `userId` | string | Yes | Unique identifier for the user. Used to isolate sessions per user. |
-| `sessionId` | string | Yes | Conversation session ID. Auto-created if doesn't exist. Use same ID to continue a conversation. |
-| `newMessage` | object | Yes | The user's message object. |
-| `newMessage.role` | string | Yes | Message role. Always `"user"` for user messages. |
-| `newMessage.parts` | array | Yes | Array of message parts. Each part has a `text` field. |
-| `streaming` | boolean | No | `false` = JSON response, `true` = Server-Sent Events stream. Default: `false`. |
+| `appName` | string | Yes | Agent application name. Use `"my_agent"` |
+| `userId` | string | Yes | Unique identifier for the user |
+| `sessionId` | string | Yes | Conversation session ID. Auto-created if doesn't exist |
+| `newMessage` | object | Yes | The user's message object |
+| `newMessage.role` | string | Yes | Message role. Always `"user"` |
+| `newMessage.parts` | array | Yes | Array of message parts with `text` field |
+| `streaming` | boolean | No | `true` = SSE stream with status updates, `false` = JSON. Default: `false` |
+| **User Context** | | | |
+| `username` | string | **Yes** | Logged-in user's username (required for ticket queries) |
+| `userRole` | string | No | User's role name (e.g., "Engineer", "Supervisor", "Admin") |
+| `userRoleCode` | string | No | User's role code (e.g., "ENG", "SUP", "ADM") |
+| `projectNames` | array | No | Filter tickets by project(s): `["ANB", "Barclays"]` |
+| `projectCode` | string | No | Legacy single project filter: `"ANB"` |
+| `teamNames` | array | No | Filter tickets by team(s): `["Maintenance", "Support"]` |
+| `team` | string | No | Legacy single team filter: `"Maintenance"` |
+
+**Response (streaming):** Server-Sent Events with status updates:
+```
+data: {"status": "Analyzing your request..."}
+data: {"status": "Checking ticket data..."}
+data: {"status": "Generating visualization..."}
+data: {"text": "<final response with chart>"}
+data: [DONE]
+```
 
 **Response (non-streaming):**
 ```json
 {
-  "response": "OIP (Operations Intelligence Platform) is...",
+  "response": "You have 20 tickets...",
   "sessionId": "session_abc",
   "userId": "user_123"
 }
 ```
 
-**Response (streaming):** Server-Sent Events (SSE) with `data: {"text": "..."}` chunks.
-
-**cURL Example:**
+**cURL Example (with all parameters):**
 ```bash
 curl -X POST http://localhost:8080/run_sse \
   -H "Content-Type: application/json" \
@@ -532,9 +552,13 @@ curl -X POST http://localhost:8080/run_sse \
     "sessionId": "session_abc",
     "newMessage": {
       "role": "user",
-      "parts": [{"text": "What is OIP?"}]
+      "parts": [{"text": "Show me my ANB tickets with a chart"}]
     },
-    "streaming": false
+    "streaming": true,
+    "username": "john.doe",
+    "userRole": "Engineer",
+    "projectNames": ["ANB"],
+    "teamNames": ["Maintenance"]
   }'
 ```
 
@@ -547,8 +571,11 @@ A simpler endpoint for basic chat interactions.
 **Request:**
 ```json
 {
-  "message": "What is OIP?",
-  "session_id": "session_abc"
+  "message": "What are my tickets?",
+  "session_id": "session_abc",
+  "username": "john.doe",
+  "project_names": ["ANB"],
+  "team_names": ["Maintenance"]
 }
 ```
 
@@ -556,35 +583,34 @@ A simpler endpoint for basic chat interactions.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `message` | string | Yes | The user's question or message text. |
-| `session_id` | string | No | Session ID for conversation continuity. Auto-generated UUID if omitted. Auto-created if doesn't exist. |
+| `message` | string | Yes | The user's question or message text |
+| `session_id` | string | No | Session ID for conversation continuity. Auto-generated if omitted |
+| `username` | string | **Yes** | Logged-in user's username (required for ticket queries) |
+| `project_names` | array | No | Filter tickets by project(s): `["ANB", "Barclays"]` |
+| `team_names` | array | No | Filter tickets by team(s): `["Maintenance"]` |
 
 **Response:**
 ```json
 {
-  "response": "OIP (Operations Intelligence Platform) is...",
+  "response": "You have 20 tickets...",
   "session_id": "session_abc"
 }
 ```
-
-**Response Fields:**
-
-| Field | Description |
-|-------|-------------|
-| `response` | The agent's reply text. |
-| `session_id` | The session ID (either provided or auto-generated). Use this for follow-up messages. |
 
 **cURL Example:**
 ```bash
 curl -X POST http://localhost:8080/chat \
   -H "Content-Type: application/json" \
   -d '{
-    "message": "What is OIP?",
-    "session_id": "session_abc"
+    "message": "Show my suspended tickets",
+    "session_id": "session_abc",
+    "username": "john.doe",
+    "project_names": ["ANB"],
+    "team_names": ["Maintenance"]
   }'
 ```
 
-> **Note:** If `session_id` is omitted, a new UUID will be generated automatically. Sessions are auto-created on first use.
+> **Note:** `username` is required for ticket queries. Project/team filters are optional - if omitted, shows all accessible tickets.
 
 ---
 
