@@ -110,6 +110,9 @@
 /* Chat HTML Content Styles */
 .chat-html-content {
   line-height: 1.6;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  hyphens: auto;
 }
 
 .chat-html-content p {

@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Important: Task Tracking
+
+**DO NOT update `current_tasks.md` in the alpha-1-prototype project.** That file is for a separate project. This Ticketing Chatbot project does not have a task tracking file.
+
 ## Claude's Expertise
 
 Claude is an expert in **Google Agent Development Kit (ADK)** - the SDK used to build this chatbot. This includes:
