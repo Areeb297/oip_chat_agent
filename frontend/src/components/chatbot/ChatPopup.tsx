@@ -7,6 +7,7 @@ import { ChatMessages } from './ChatMessages';
 import { ChatInput } from './ChatInput';
 import { useChat } from '@/hooks/useChat';
 import { useChatHistory } from '@/hooks/useChatHistory';
+import { useUser } from '@/contexts/UserContext';
 import { cn } from '@/lib/utils';
 
 interface ChatPopupProps {
@@ -26,10 +27,20 @@ export function ChatPopup({
   sessionId,
   onNewSession,
 }: ChatPopupProps) {
+  // Get user context
+  const { username, roleName, roleCode, projectCode, team } = useUser();
+
   const { messages, isLoading, error, sendMessage, newChat, sessionId: currentSessionId } =
     useChat({
       initialSessionId: sessionId,
       onNewSession,
+      userContext: {
+        username,
+        userRole: roleName,
+        userRoleCode: roleCode,
+        projectCode,
+        team,
+      },
     });
 
   const { saveSession } = useChatHistory();

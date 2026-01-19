@@ -4,7 +4,7 @@
 
 import json
 import uuid
-from typing import Any
+from typing import Any, Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -64,6 +64,12 @@ class RunSSERequest(BaseModel):
     sessionId: str = Field(alias="sessionId")
     newMessage: NewMessage = Field(alias="newMessage")
     streaming: bool = False
+    # User context fields for OIP integration
+    username: str = ""
+    userRole: Optional[str] = Field(default=None, alias="userRole")
+    userRoleCode: Optional[str] = Field(default=None, alias="userRoleCode")
+    projectCode: Optional[str] = Field(default=None, alias="projectCode")
+    team: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -136,6 +142,9 @@ async def run_sse(request: RunSSERequest):
     """ADK-compatible endpoint for running agent (matches adk web format)"""
     user_id = request.userId
     session_id = request.sessionId
+
+    # Log user context for debugging/testing
+    print(f"[USER CONTEXT] username={request.username}, role={request.userRole}, roleCode={request.userRoleCode}, projectCode={request.projectCode}, team={request.team}")
 
     # Get or create session (async methods)
     session = await session_service.get_session(

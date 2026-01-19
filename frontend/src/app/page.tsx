@@ -1,12 +1,95 @@
+'use client';
+
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import { ChatWidget } from '@/components/chatbot';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { MessageCircle, BarChart3, Clock } from 'lucide-react';
+import { MessageCircle, BarChart3, Clock, LogOut, User } from 'lucide-react';
+import { useUser } from '@/contexts/UserContext';
 
 export default function Home() {
+  const { isLoggedIn, username, roleName, logout } = useUser();
+  const router = useRouter();
+
+  // Redirect to login if not logged in
+  useEffect(() => {
+    if (!isLoggedIn) {
+      router.push('/login');
+    }
+  }, [isLoggedIn, router]);
+
+  // Show nothing while checking login status
+  if (!isLoggedIn) {
+    return null;
+  }
+
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50/30 to-white">
+      {/* Top Header Bar */}
+      <header className="sticky top-0 z-50 border-b bg-white/80 backdrop-blur-sm">
+        <div className="container mx-auto flex items-center justify-between px-4 py-3">
+          {/* Logo */}
+          <div className="flex items-center gap-2">
+            <svg
+              className="h-8 w-8"
+              viewBox="0 0 48 48"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M24 4L4 14L24 24L44 14L24 4Z"
+                fill="#3b82f6"
+                fillOpacity="0.2"
+                stroke="#3b82f6"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4 34L24 44L44 34"
+                stroke="#1e3a5f"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4 24L24 34L44 24"
+                stroke="#3b82f6"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            <span className="text-lg font-bold text-[#1e3a5f]">Ebttikar-OIP</span>
+          </div>
+
+          {/* User Info & Logout */}
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-2">
+              <User className="h-4 w-4 text-slate-500" />
+              <span className="text-sm font-medium text-[#1e3a5f]">{username}</span>
+              {roleName && (
+                <>
+                  <span className="text-slate-300">|</span>
+                  <span className="text-sm font-medium text-[#3b82f6]">{roleName}</span>
+                </>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={logout}
+              className="text-slate-500 hover:text-red-500 hover:bg-red-50"
+            >
+              <LogOut className="mr-1 h-4 w-4" />
+              Logout
+            </Button>
+          </div>
+        </div>
+      </header>
+
       {/* Hero Section */}
       <div className="container mx-auto px-4 py-16">
         <div className="flex flex-col items-center text-center">

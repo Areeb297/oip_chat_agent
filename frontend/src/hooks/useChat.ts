@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
-import type { Message, ChatSession } from '@/types/chat';
+import type { Message, ChatSession, UserContext } from '@/types/chat';
 import { sendStreamingMessage, createSession } from '@/lib/api';
 import { API_CONFIG } from '@/config/api.config';
 
@@ -10,6 +10,7 @@ interface UseChatOptions {
   initialSessionId?: string;
   initialMessages?: Message[];
   onNewSession?: (sessionId: string) => void;
+  userContext?: UserContext;
 }
 
 export function useChat(options: UseChatOptions = {}) {
@@ -112,14 +113,16 @@ export function useChat(options: UseChatOptions = {}) {
               )
             );
             setIsLoading(false);
-          }
+          },
+          // userContext
+          options.userContext
         );
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
         setIsLoading(false);
       }
     },
-    [isLoading, sessionId]
+    [isLoading, sessionId, options.userContext]
   );
 
   const clearMessages = useCallback(() => {

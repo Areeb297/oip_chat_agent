@@ -11,12 +11,23 @@ import { ChatMessages } from './ChatMessages';
 import { ChatInput } from './ChatInput';
 import { useChat } from '@/hooks/useChat';
 import { useChatHistory } from '@/hooks/useChatHistory';
+import { useUser } from '@/contexts/UserContext';
 
 export function ChatFullScreen() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const searchParams = useSearchParams();
   const router = useRouter();
   const urlSessionId = searchParams.get('session');
+
+  // Get user context
+  const { username, roleName, roleCode, projectCode, team, isLoggedIn, isLoaded: userLoaded } = useUser();
+
+  // Redirect to login if not logged in (wait for context to load first)
+  useEffect(() => {
+    if (userLoaded && !isLoggedIn) {
+      router.push('/login');
+    }
+  }, [userLoaded, isLoggedIn, router]);
 
   const { sessions, saveSession, getSession, deleteSession, isLoaded } =
     useChatHistory();
@@ -34,6 +45,13 @@ export function ChatFullScreen() {
     onNewSession: (newSessionId) => {
       // Update URL when new session is created
       router.push(`/chat?session=${newSessionId}`, { scroll: false });
+    },
+    userContext: {
+      username,
+      userRole: roleName,
+      userRoleCode: roleCode,
+      projectCode,
+      team,
     },
   });
 
@@ -120,6 +138,8 @@ export function ChatFullScreen() {
           subtitle="Ask me anything about OIP"
           onNewChat={handleNewChat}
           showExpandButton={false}
+          showContextSelectors={true}
+          showUserInfo={true}
         />
 
         <div className="flex-1 overflow-hidden">

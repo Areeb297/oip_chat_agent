@@ -76,3 +76,7 @@ htmlcov/
 
 # OIP Images
 /OIP_images
+
+
+# OIP TicketTraq Database
+/OIP_Database

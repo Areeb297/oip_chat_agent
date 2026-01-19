@@ -35,6 +35,20 @@ export interface RunSSERequest {
     parts: { text: string }[];
   };
   streaming: boolean;
+  // User context parameters
+  username?: string;
+  userRole?: string | null;
+  userRoleCode?: string | null;
+  projectCode?: string | null;
+  team?: string | null;
+}
+
+export interface UserContext {
+  username: string | null;
+  userRole: string | null;
+  userRoleCode: string | null;
+  projectCode: string | null;
+  team: string | null;
 }
 
 export interface SSEData {
