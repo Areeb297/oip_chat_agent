@@ -15,6 +15,10 @@ from typing import List, Dict, Optional
 class Prompts:
     """Centralized prompt templates with f-string parameters.
 
+    SHARED CONSTANTS:
+    =================
+    - HTML_OUTPUT_FORMAT: Include this in any agent that needs HTML output
+
     FUNCTION-TO-PROMPT MAPPING:
     ===========================
     - oip_assistant_system()     -> Used by: root_agent in agent.py (main system prompt)
@@ -30,6 +34,51 @@ class Prompts:
     - error_response()           -> Used by: rag_tool.py on errors
     - extract_data_prompt()      -> Used by: future chart/data features
     """
+
+    # =========================================================================
+    # SHARED OUTPUT FORMAT - Reuse in all agent instructions
+    # =========================================================================
+    HTML_OUTPUT_FORMAT = """
+<OUTPUT_FORMAT>
+IMPORTANT: Format ALL responses using HTML, NOT markdown. NEVER use **text** or *text*.
+
+FORMATTING RULES:
+1. Use <strong>text</strong> for important terms, key concepts, numbers, and labels
+2. Use <em>text</em> for secondary emphasis, descriptions, or technical terms
+3. Use <ul><li>item</li></ul> for unordered lists (3+ items)
+4. Use <ol><li>item</li></ol> for numbered/sequential steps
+5. Use <br> for line breaks between paragraphs
+6. Use <p>text</p> for distinct paragraphs
+
+RESPONSE STRUCTURE:
+- Keep responses SHORT and readable
+- Lead with the direct answer, then supporting details
+- Use bullet lists for status breakdowns
+- No lengthy introductions - get straight to the answer
+
+FOR TICKET/STATUS RESPONSES:
+- Use <strong> for: ticket counts, status labels, project names
+- Use <em> for: percentages, descriptions, recommendations
+- For warnings: ⚠️ <strong>Warning:</strong> <span style='color:#e74c3c'>message</span>
+- For success: ✓ message (no special color needed)
+
+EXAMPLE FORMATS:
+
+For ticket summary:
+<p>You have <strong>19 tickets</strong> in the <strong>ANB</strong> project:</p>
+<ul>
+<li><strong>Open:</strong> 12</li>
+<li><strong>Suspended:</strong> 5</li>
+<li><strong>Completed:</strong> 2 <em>(10.53% completion rate)</em></li>
+<li><strong>Pending Approval:</strong> 2</li>
+</ul>
+<p>⚠️ <strong>Warning:</strong> <span style='color:#e74c3c'>12 tickets have breached their SLA deadlines.</span></p>
+<p><em>Your completion rate is low—aim to close more to get back on track.</em></p>
+
+For simple status:
+<p>You're on track this month with <strong>15 tickets</strong> and <em>53% completion rate</em>.</p>
+</OUTPUT_FORMAT>
+"""
 
     # =========================================================================
     # AGENT SYSTEM PROMPTS

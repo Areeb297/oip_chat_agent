@@ -30,7 +30,7 @@ export function ChatPopup({
   // Get user context
   const { username, roleName, roleCode, projectCode, team } = useUser();
 
-  const { messages, isLoading, error, sendMessage, newChat, sessionId: currentSessionId } =
+  const { messages, isLoading, loadingStatus, error, sendMessage, newChat, sessionId: currentSessionId } =
     useChat({
       initialSessionId: sessionId,
       onNewSession,
@@ -75,7 +75,7 @@ export function ChatPopup({
       />
 
       <div className="flex-1 overflow-hidden">
-        <ChatMessages messages={messages} isLoading={isLoading} />
+        <ChatMessages messages={messages} isLoading={isLoading} loadingStatus={loadingStatus} />
       </div>
 
       {error && (

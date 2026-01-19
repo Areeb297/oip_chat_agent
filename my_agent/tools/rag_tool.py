@@ -1,9 +1,13 @@
 """RAG tool for Google ADK agent - searches OIP knowledge base"""
+import logging
 from typing import Optional
 from ..rag.vector_store import FAISSVectorStore
 from ..helpers.openrouter import OpenRouterClient
 from ..prompts.templates import Prompts
 from ..config import RAGConfig
+
+# Configure logger for this module
+logger = logging.getLogger("oip_assistant.tools.rag")
 
 
 # =============================================================================
@@ -56,6 +60,8 @@ def search_oip_documents(query: str, top_k: int = 5) -> dict:
         - message: Status message (for no_results or error)
     """
     try:
+        logger.info("🔍 Looking up OIP documentation...")
+
         # Validate top_k
         top_k = min(max(1, top_k), 10)
 
@@ -64,9 +70,11 @@ def search_oip_documents(query: str, top_k: int = 5) -> dict:
         openrouter = _get_openrouter()
 
         # Generate query embedding
+        logger.info("📖 Analyzing your question...")
         query_embedding = openrouter.get_embedding(query)
 
         # Search FAISS index
+        logger.info("📚 Finding relevant information...")
         results = vector_store.search(
             query_embedding=query_embedding,
             top_k=top_k,
@@ -75,6 +83,7 @@ def search_oip_documents(query: str, top_k: int = 5) -> dict:
 
         # Handle no results
         if not results:
+            logger.info("💭 No matching information found")
             return {
                 "status": "no_results",
                 "query": query,
@@ -100,6 +109,8 @@ def search_oip_documents(query: str, top_k: int = 5) -> dict:
             query=query,
             include_scores=True,
         )
+
+        logger.info(f"✅ Found {len(results)} relevant documents")
 
         return {
             "status": "success",

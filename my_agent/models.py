@@ -111,3 +111,99 @@ class ToolResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
     message: Optional[str] = None
     error: Optional[str] = None
+
+
+# =============================================================================
+# TICKET ANALYTICS MODELS
+# =============================================================================
+class TicketQueryParams(BaseModel):
+    """Parameters for ticket summary queries.
+
+    Used by the ticket_analytics agent to validate and structure
+    query parameters before calling the database stored procedure.
+    """
+    username: str = Field(..., description="The logged-in user's username (required)")
+    project_name: Optional[str] = Field(None, description="Filter by project name (e.g., 'ANB', 'Barclays')")
+    team_name: Optional[str] = Field(None, description="Filter by team name (e.g., 'Maintenance', 'Test Team')")
+    month: Optional[int] = Field(None, ge=1, le=12, description="Filter by month (1-12)")
+    year: Optional[int] = Field(None, ge=2020, le=2030, description="Filter by year")
+    date_from: Optional[str] = Field(None, description="Start date in YYYY-MM-DD format")
+    date_to: Optional[str] = Field(None, description="End date in YYYY-MM-DD format")
+
+
+class TicketSummary(BaseModel):
+    """Ticket summary returned from the database stored procedure.
+
+    This model validates the response from usp_Chatbot_GetTicketSummary
+    and provides type safety for downstream processing.
+    """
+    TotalTickets: int = Field(default=0, description="Total count of tickets")
+    OpenTickets: int = Field(default=0, description="Number of open tickets")
+    SuspendedTickets: int = Field(default=0, description="Number of suspended tickets")
+    CompletedTickets: int = Field(default=0, description="Number of completed tickets")
+    PendingApproval: int = Field(default=0, description="Tickets awaiting approval")
+    SLABreached: int = Field(default=0, description="Tickets that breached SLA")
+    CompletionRate: float = Field(default=0.0, description="Percentage of completed tickets")
+    Username: Optional[str] = Field(None, description="The queried username")
+    UserRole: Optional[str] = Field(None, description="User's role (Engineer/Supervisor/Admin)")
+    ProjectFilter: Optional[str] = Field(None, description="Applied project filter")
+    TeamFilter: Optional[str] = Field(None, description="Applied team filter")
+    DateRange: Optional[str] = Field(None, description="Applied date range")
+    Message: str = Field(default="Success", description="Status message")
+
+    @property
+    def has_sla_issues(self) -> bool:
+        """Check if there are any SLA breaches."""
+        return self.SLABreached > 0
+
+    @property
+    def is_on_track(self) -> bool:
+        """Determine if user is on track with tickets.
+
+        Criteria:
+        - Completion rate >= 50%
+        - No SLA breaches
+        - Less than 3 tickets pending approval
+        """
+        return (
+            self.CompletionRate >= 50.0
+            and self.SLABreached == 0
+            and self.PendingApproval < 3
+        )
+
+    def get_status_summary(self) -> str:
+        """Generate a brief status summary."""
+        if self.TotalTickets == 0:
+            return "No tickets found for the specified criteria."
+
+        parts = []
+        parts.append(f"{self.TotalTickets} total tickets")
+
+        if self.CompletedTickets > 0:
+            parts.append(f"{self.CompletedTickets} completed ({self.CompletionRate:.1f}%)")
+
+        if self.OpenTickets > 0:
+            parts.append(f"{self.OpenTickets} open")
+
+        if self.SuspendedTickets > 0:
+            parts.append(f"{self.SuspendedTickets} suspended")
+
+        if self.SLABreached > 0:
+            parts.append(f"{self.SLABreached} SLA breached")
+
+        return ", ".join(parts)
+
+
+def validate_ticket_summary(data: dict) -> TicketSummary:
+    """Validate raw database response and convert to TicketSummary.
+
+    Args:
+        data: Raw dictionary from database stored procedure
+
+    Returns:
+        TicketSummary: Validated and typed model instance
+
+    Raises:
+        ValidationError: If data doesn't match expected schema
+    """
+    return TicketSummary(**data)

@@ -16,6 +16,7 @@ interface UseChatOptions {
 export function useChat(options: UseChatOptions = {}) {
   const [messages, setMessages] = useState<Message[]>(options.initialMessages || []);
   const [isLoading, setIsLoading] = useState(false);
+  const [loadingStatus, setLoadingStatus] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string>(
     options.initialSessionId || uuidv4()
@@ -69,6 +70,7 @@ export function useChat(options: UseChatOptions = {}) {
 
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setIsLoading(true);
+      setLoadingStatus('Analyzing your request...');
       streamingMessageRef.current = '';
 
       try {
@@ -97,6 +99,7 @@ export function useChat(options: UseChatOptions = {}) {
               )
             );
             setIsLoading(false);
+            setLoadingStatus('');
           },
           // onError
           (error: Error) => {
@@ -113,9 +116,14 @@ export function useChat(options: UseChatOptions = {}) {
               )
             );
             setIsLoading(false);
+            setLoadingStatus('');
           },
           // userContext
-          options.userContext
+          options.userContext,
+          // onStatus
+          (status: string) => {
+            setLoadingStatus(status);
+          }
         );
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Unknown error');
@@ -146,6 +154,7 @@ export function useChat(options: UseChatOptions = {}) {
   return {
     messages,
     isLoading,
+    loadingStatus,
     error,
     sessionId,
     sendMessage,

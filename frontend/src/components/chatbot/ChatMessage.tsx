@@ -4,14 +4,16 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
 import type { Message } from '@/types/chat';
 import { Bot, User, Copy, Check } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { Button } from '@/components/ui/button';
+import { DynamicChart, parseChartFromContent } from './DynamicChart';
 
 interface ChatMessageProps {
   message: Message;
+  loadingStatus?: string;
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+export function ChatMessage({ message, loadingStatus }: ChatMessageProps) {
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
 
@@ -29,9 +31,30 @@ export function ChatMessage({ message }: ChatMessageProps) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  // Parse chart from message content if present
+  const { chart, textContent } = useMemo(() => {
+    if (isUser || !message.content) {
+      return { chart: null, textContent: message.content };
+    }
+    return parseChartFromContent(message.content);
+  }, [message.content, isUser]);
+
   // Render message content - HTML for assistant, plain text for user
   const renderContent = () => {
     if (!message.content) {
+      // Show loading status when streaming with empty content
+      if (message.status === 'streaming' && loadingStatus) {
+        return (
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1">
+              <span className="h-2 w-2 rounded-full bg-[#3b82f6] animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="h-2 w-2 rounded-full bg-[#3b82f6] animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="h-2 w-2 rounded-full bg-[#3b82f6] animate-bounce" style={{ animationDelay: '300ms' }} />
+            </div>
+            <span className="text-slate-500">{loadingStatus}</span>
+          </div>
+        );
+      }
       return <span className="italic text-slate-400">...</span>;
     }
 
@@ -40,12 +63,20 @@ export function ChatMessage({ message }: ChatMessageProps) {
       return <span className="whitespace-pre-wrap break-words">{message.content}</span>;
     }
 
-    // Assistant messages may contain HTML formatting
+    // Assistant messages: render chart if present, then HTML content
     return (
-      <div
-        className="chat-html-content prose prose-sm max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5"
-        dangerouslySetInnerHTML={{ __html: message.content }}
-      />
+      <div className="space-y-3">
+        {/* Render chart component if present */}
+        {chart && <DynamicChart config={chart} />}
+
+        {/* Render remaining HTML content */}
+        {textContent && (
+          <div
+            className="chat-html-content prose prose-sm max-w-none prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-0.5"
+            dangerouslySetInnerHTML={{ __html: textContent }}
+          />
+        )}
+      </div>
     );
   };
 

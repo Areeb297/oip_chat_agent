@@ -10,9 +10,10 @@ import { MessageCircle } from 'lucide-react';
 interface ChatMessagesProps {
   messages: Message[];
   isLoading?: boolean;
+  loadingStatus?: string;
 }
 
-export function ChatMessages({ messages, isLoading }: ChatMessagesProps) {
+export function ChatMessages({ messages, isLoading, loadingStatus }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom when new messages arrive
@@ -66,12 +67,16 @@ export function ChatMessages({ messages, isLoading }: ChatMessagesProps) {
   return (
     <ScrollArea className="h-full bg-white" ref={scrollRef}>
       <div className="flex flex-col py-2">
-        {messages.map((message) => (
-          <ChatMessage key={message.id} message={message} />
+        {messages.map((message, index) => (
+          <ChatMessage
+            key={message.id}
+            message={message}
+            loadingStatus={index === messages.length - 1 && message.status === 'streaming' ? loadingStatus : undefined}
+          />
         ))}
         {isLoading &&
           messages[messages.length - 1]?.status !== 'streaming' && (
-            <TypingIndicator />
+            <TypingIndicator status={loadingStatus} />
           )}
       </div>
     </ScrollArea>
