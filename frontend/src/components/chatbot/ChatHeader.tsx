@@ -46,7 +46,7 @@ export function ChatHeader({
   return (
     <div className="flex flex-col border-b border-slate-100 bg-gradient-to-r from-white to-slate-50/50">
       {/* Main header row */}
-      <div className="flex items-center justify-between px-4 py-3">
+      <div className="flex items-center justify-between px-4 py-2">
         <div className="flex items-center gap-3">
           {/* Logo icon with gradient */}
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 shadow-lg shadow-blue-500/20">

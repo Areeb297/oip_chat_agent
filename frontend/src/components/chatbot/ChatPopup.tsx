@@ -62,7 +62,7 @@ export function ChatPopup({
     <Card
       className={cn(
         'fixed z-40 flex flex-col overflow-hidden',
-        'w-[400px] h-[600px]',
+        'w-[460px] h-[600px]',
         'rounded-2xl border border-slate-200/60',
         'shadow-[0_25px_50px_-12px_rgba(0,0,0,0.25)]',
         'animate-in fade-in-0 slide-in-from-bottom-5 duration-300',
@@ -79,7 +79,7 @@ export function ChatPopup({
       />
 
       <div className="flex-1 overflow-hidden">
-        <ChatMessages messages={messages} isLoading={isLoading} loadingStatus={loadingStatus} />
+        <ChatMessages messages={messages} isLoading={isLoading} loadingStatus={loadingStatus} onSendMessage={sendMessage} isPopup={true} />
       </div>
 
       {error && (

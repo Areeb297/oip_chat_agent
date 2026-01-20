@@ -152,7 +152,7 @@ export function ChatFullScreen() {
         />
 
         <div className="flex-1 overflow-hidden">
-          <ChatMessages messages={messages} isLoading={isLoading} loadingStatus={loadingStatus} />
+          <ChatMessages messages={messages} isLoading={isLoading} loadingStatus={loadingStatus} onSendMessage={sendMessage} />
         </div>
 
         {error && (
