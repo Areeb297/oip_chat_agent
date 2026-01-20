@@ -1,11 +1,13 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ChatMessage } from './ChatMessage';
 import { TypingIndicator } from './TypingIndicator';
 import { FAQSection } from './FAQSection';
 import type { Message } from '@/types/chat';
+import { HelpCircle, X, MessageSquare } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 interface ChatMessagesProps {
   messages: Message[];
@@ -18,6 +20,14 @@ interface ChatMessagesProps {
 
 export function ChatMessages({ messages, isLoading, loadingStatus, onSendMessage, isPopup = false }: ChatMessagesProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [showFAQ, setShowFAQ] = useState(false);
+
+  const handleFAQQuestionClick = (question: string) => {
+    setShowFAQ(false); // Hide FAQ when a question is selected
+    if (onSendMessage) {
+      onSendMessage(question);
+    }
+  };
 
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
