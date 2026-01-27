@@ -4,85 +4,119 @@ A RAG-powered chatbot for the Ebttikar Operations Intelligence Platform (OIP) bu
 
 ## Overview
 
-This system uses Retrieval-Augmented Generation (RAG) to answer questions about the OIP platform by searching through internal documentation. Built with a modular, scalable architecture designed for future expansion.
+A full-stack multi-agent chatbot for the Operations Intelligence Platform (OIP) and TickTraq ticket management system. The system combines RAG-based document Q&A, real-time ticket analytics from SQL Server, and interactive Recharts visualizations, all served via SSE streaming through a FastAPI backend.
 
 ### Key Features
 
-- **Document-based Q&A**: Answers questions using SOW.pdf and Ebttikar_OIP_doc.docx
-- **FAISS Vector Store**: Fast local similarity search
-- **OpenRouter Integration**: Embeddings via `text-embedding-ada-002`
-- **Google ADK**: Agent orchestration with A2A protocol support
+- **Multi-Agent Architecture**: 1 root agent + 3 sub-agents (greeter, oip_expert, ticket_analytics)
+- **Ticket Analytics**: Real-time ticket data from SQL Server via stored procedures with SLA tracking
+- **Interactive Charts**: Recharts-based visualizations (pie, bar, gauge, line) rendered in the frontend
+- **Document-based Q&A (RAG)**: Answers OIP questions using FAISS vector search over SOW.pdf and OIP docs
+- **SSE Streaming**: Real-time status updates as agents process requests
 - **Bilingual Support**: English and Arabic greetings
+- **FAQ System**: Interactive categorized FAQ with 7 categories and 16 questions
+- **Google ADK**: Agent orchestration with tool chaining and session state
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      User Query                              │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 root_agent (Coordinator)                     │
-│                    Google ADK LlmAgent                       │
-└─────────────────────────────────────────────────────────────┘
-                            │
-            ┌───────────────┴───────────────┐
-            ▼                               ▼
-┌─────────────────────┐         ┌─────────────────────┐
-│      greeter        │         │     oip_expert      │
-│   (Greetings)       │         │   (RAG Q&A)         │
-└─────────────────────┘         └─────────────────────┘
-                                            │
-                                            ▼
-                                ┌─────────────────────┐
-                                │ search_oip_documents│
-                                │      (Tool)         │
-                                └─────────────────────┘
-                                            │
-                                            ▼
-                                ┌─────────────────────┐
-                                │   FAISS Index       │
-                                │  (Vector Store)     │
-                                └─────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                 Frontend (Next.js + React 19 + Recharts)             │
+│         Pages: Login, Home, Full Chat + Floating Widget + FAQ        │
+└──────────────────────────────────────────────────────────────────────┘
+                                │
+                     HTTP / Streaming SSE (port 8080)
+                                │
+┌──────────────────────────────────────────────────────────────────────┐
+│                    Backend (FastAPI + Google ADK)                     │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │            root_agent (oip_assistant) - Coordinator            │  │
+│  │   Routes: Greetings → greeter                                 │  │
+│  │           Ticket queries → ticket_analytics                   │  │
+│  │           OIP questions → oip_expert                          │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│         │                    │                        │              │
+│         ▼                    ▼                        ▼              │
+│  ┌────────────┐   ┌──────────────────┐   ┌────────────────────┐     │
+│  │  greeter   │   │ ticket_analytics │   │    oip_expert      │     │
+│  │(Greetings) │   │ (DB + Charts)    │   │    (RAG Q&A)       │     │
+│  │ No tools   │   │ 10 tools         │   │ 1 tool             │     │
+│  └────────────┘   └──────────────────┘   └────────────────────┘     │
+│                      │            │                  │               │
+│               ┌──────┘            └──────┐           │               │
+│               ▼                          ▼           ▼               │
+│      ┌─────────────────┐     ┌──────────────┐  ┌──────────────┐     │
+│      │   SQL Server     │     │ Chart Tools  │  │ FAISS Index  │     │
+│      │   (TickTraq)     │     │ (Recharts)   │  │ (Vector DB)  │     │
+│      │                  │     │              │  │              │     │
+│      │ Stored Procedure │     │ Pie, Bar,    │  │ OpenRouter   │     │
+│      │ usp_Chatbot_     │     │ Gauge, Line  │  │ Embeddings   │     │
+│      │ GetTicketSummary │     │              │  │              │     │
+│      └─────────────────┘     └──────────────┘  └──────────────┘     │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-### Prompt Workflow (Mermaid)
+### Agent Routing (Mermaid)
 
 ```mermaid
 flowchart LR
-    subgraph Input
-        Q[User Query]
+    subgraph Frontend
+        UI[Next.js Chat UI]
     end
 
-    subgraph Agents
-        RA[root_agent]
-        OE[oip_expert]
+    subgraph Backend
+        API[FastAPI + SSE]
+        RA[root_agent<br/>oip_assistant]
+    end
+
+    subgraph Sub-Agents
         GR[greeter]
+        TA[ticket_analytics]
+        OE[oip_expert]
     end
 
-    subgraph Prompts
-        SYS["oip_assistant_system()"]
-        FMT["format_rag_context()"]
+    subgraph "ticket_analytics Tools (10)"
+        DB[get_ticket_summary]
+        DATE[get_current_date]
+        LOOK[get_lookups]
+        CSC[create_chart_from_session]
+        CBD[create_breakdown_chart]
+        CC[create_chart]
+        CTSC[create_ticket_status_chart]
+        CRG[create_completion_rate_gauge]
+        CTOT[create_tickets_over_time_chart]
+        CPC[create_project_comparison_chart]
     end
 
-    subgraph RAG
-        TOOL[search_oip_documents]
-        FAISS[(FAISS Index)]
+    subgraph "oip_expert Tools (1)"
+        RAG[search_oip_documents]
     end
 
-    Q --> RA
+    subgraph Data Stores
+        SQL[(SQL Server<br/>TickTraq)]
+        FAISS[(FAISS<br/>Vector Store)]
+    end
+
+    UI -->|HTTP/SSE| API
+    API --> RA
     RA -->|greeting| GR
-    RA -->|OIP question| OE
-    OE -.->|system prompt| SYS
-    OE --> TOOL
-    TOOL --> FAISS
-    FAISS --> FMT
-    FMT --> OE
-    OE --> ANS[Response]
-    GR --> ANS
+    RA -->|tickets, SLA, charts| TA
+    RA -->|OIP docs| OE
+
+    TA --> DB & DATE & LOOK & CSC & CBD & CC & CTSC & CRG & CTOT & CPC
+    DB --> SQL
+    LOOK --> SQL
+
+    OE --> RAG
+    RAG --> FAISS
+
+    GR --> ANS[Response]
+    TA --> ANS
+    OE --> ANS
+    ANS -->|SSE stream| UI
 ```
 
 > **See [PROMPTS.md](PROMPTS.md) for detailed prompt documentation and customization guide.**
@@ -94,14 +128,16 @@ flowchart LR
 ```
 Ticketing Chatbot/
 ├── .env                      # API keys (OPENROUTER, GOOGLE, TAVILY)
+├── main.py                   # FastAPI server (SSE streaming, 5 endpoints)
 ├── requirements.txt          # Python dependencies
 ├── README.md                 # This file
 ├── PROMPTS.md                # Prompt templates documentation
 ├── IMPLEMENTATION_PLAN.md    # Detailed implementation plan
 │
-├── docs/                     # Knowledge base documents
+├── docs/                     # Knowledge base + documentation
 │   ├── SOW.pdf               # Statement of Work
-│   └── Ebttikar_OIP_doc.docx # OIP documentation
+│   ├── Ebttikar_OIP_doc.docx # OIP documentation
+│   └── API_REFERENCE.md      # Full API documentation for OIP integration
 │
 ├── data/
 │   └── faiss_index/          # Persisted vector index
@@ -113,9 +149,14 @@ Ticketing Chatbot/
 │
 └── my_agent/                 # Main agent package
     ├── __init__.py           # Exports root_agent
-    ├── agent.py              # Agent definitions (greeter, oip_expert)
+    ├── agent.py              # Root agent + greeter + oip_expert definitions
     ├── config.py             # Centralized configuration
     ├── models.py             # Pydantic data models
+    │
+    ├── agents/               # Sub-agent definitions
+    │   ├── __init__.py
+    │   ├── ticket_analytics.py  # Ticket analytics agent (10 tools)
+    │   └── data_visualization.py # Unused (merged into ticket_analytics)
     │
     ├── prompts/              # Prompt templates
     │   ├── __init__.py
@@ -131,19 +172,27 @@ Ticketing Chatbot/
     │   ├── chunker.py        # Semantic document chunking
     │   └── vector_store.py   # FAISS index operations
     │
-    └── tools/                # Agent tools
+    └── tools/                # Agent tools (13 total)
         ├── __init__.py
-        └── rag_tool.py       # search_oip_documents function
+        ├── rag_tool.py       # search_oip_documents (FAISS search)
+        ├── db_tools.py       # get_ticket_summary, get_current_date,
+        │                     # create_chart_from_session, get_lookups
+        └── chart_tools.py    # create_chart, create_ticket_status_chart,
+                              # create_completion_rate_gauge,
+                              # create_tickets_over_time_chart,
+                              # create_project_comparison_chart,
+                              # create_breakdown_chart
 ```
 
 ### Why This Structure?
 
 | Directory | Purpose |
 |-----------|---------|
+| `agents/` | Sub-agent definitions - ticket_analytics with ReAct prompting |
 | `prompts/` | Isolated prompt templates - easy to modify without touching code |
 | `helpers/` | Reusable functions (API clients, loaders) - no duplication |
 | `rag/` | RAG-specific components - chunking, embeddings, retrieval |
-| `tools/` | Agent tools - each tool in its own file for scalability |
+| `tools/` | Agent tools - RAG search, DB queries, chart generation |
 | `scripts/` | CLI utilities - ingestion, maintenance scripts |
 
 ---
@@ -220,9 +269,17 @@ pip install -r requirements.txt
 Create or verify `.env` file:
 
 ```env
+# Required
 GOOGLE_API_KEY=your_google_api_key
 OPENROUTER_API_KEY=your_openrouter_api_key
-TAVILY_API_KEY=your_tavily_api_key  # Optional
+
+# Optional
+USE_OPENROUTER=false              # Set to "true" to use OpenRouter/Grok instead of Gemini
+TAVILY_API_KEY=your_tavily_api_key
+
+# Database (defaults shown - override if your SQL Server is different)
+DB_SERVER=LAPTOP-3BGTAL2E\SQLEXPRESS
+DB_NAME=TickTraq
 ```
 
 ### 5. Ingest Documents
@@ -267,13 +324,17 @@ Vectors stored: XX
 
 ### 6. Run the Agent
 
+**Option A: FastAPI Server (for frontend integration)**
+```bash
+python main.py
+```
+Server runs at `http://localhost:8080` with SSE streaming support.
+
+**Option B: ADK Web Interface (for direct agent testing)**
 ```bash
 adk web my_agent
 ```
-
-> **Note:** Specify the agent folder name (`my_agent`) to prevent ADK from listing other directories (like `data`, `docs`, `scripts`, `venv`) in the agent dropdown.
-
-Open browser at `http://localhost:8000`
+Opens at `http://localhost:8000`. Specify `my_agent` to prevent ADK from listing other directories.
 
 ---
 
@@ -281,36 +342,63 @@ Open browser at `http://localhost:8000`
 
 ### Example Queries
 
-**Greetings:**
+**Greetings** (routed to `greeter`):
 - "Hello"
 - "Marhaba"
 - "Hi there"
 
-**OIP Questions:**
+**Ticket Analytics** (routed to `ticket_analytics`):
+- "What are my tickets?"
+- "How many open tickets do I have for ANB?"
+- "Am I on track with my tickets this month?"
+- "Do I have any SLA breaches?"
+- "Show me my ticket status for the Maintenance team"
+- "How are my Riyadh region tickets?"
+
+**Charts and Visualizations** (routed to `ticket_analytics`):
+- "Show me a chart of my ticket status"
+- "Plot suspended vs non-suspended tickets"
+- "Graph my completion rate"
+- "Compare ANB vs Barclays projects"
+- "Chart tickets by region"
+
+**OIP Platform Questions** (routed to `oip_expert`):
 - "What is the OIP platform?"
+- "How does ticket closure work?"
 - "Explain the SOW deliverables"
-- "What features does OIP have?"
-- "Tell me about the implementation timeline"
+- "What is the BTR tracker?"
 
 ---
 
 ## Configuration
 
-All settings are in `my_agent/config.py`:
+### RAG Settings (`my_agent/config.py`)
 
 ```python
-# Chunk settings
-RAGConfig.CHUNK_SIZE = 500      # Characters per chunk
-RAGConfig.CHUNK_OVERLAP = 50    # Overlap between chunks
-
-# Retrieval settings
-RAGConfig.DEFAULT_TOP_K = 5     # Results to return
-RAGConfig.SIMILARITY_THRESHOLD = 0.3  # Minimum score
-
-# Models
+RAGConfig.CHUNK_SIZE = 500               # Characters per chunk
+RAGConfig.CHUNK_OVERLAP = 50             # Overlap between chunks
+RAGConfig.DEFAULT_TOP_K = 5              # Results to return
+RAGConfig.SIMILARITY_THRESHOLD = 0.3     # Minimum score
 DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-ada-002"
-DEFAULT_LLM_MODEL = "openai/gpt-4o-mini"
+```
+
+### Agent Model (`my_agent/agent.py`)
+
+```python
+# Default: Google Gemini (free tier)
 DEFAULT_AGENT_MODEL = "gemini-2.5-flash"
+
+# Alternative: OpenRouter via LiteLLM (set USE_OPENROUTER=true in .env)
+AGENT_MODEL = LiteLlm(model="openrouter/x-ai/grok-4.1-fast")
+```
+
+### Database (`my_agent/tools/db_tools.py`)
+
+```
+Host:       LAPTOP-3BGTAL2E\SQLEXPRESS  (or SQL_SERVER_HOST env var)
+Database:   TickTraq                     (or SQL_SERVER_DATABASE env var)
+Driver:     ODBC Driver 17 for SQL Server
+Procedure:  usp_Chatbot_GetTicketSummary
 ```
 
 ---
@@ -329,16 +417,23 @@ DEFAULT_AGENT_MODEL = "gemini-2.5-flash"
 
 1. Create tool function in `my_agent/tools/new_tool.py`
 2. Export from `my_agent/tools/__init__.py`
-3. Add to agent in `my_agent/agent.py`
+3. Add to the relevant agent's `tools=[]` list
 
 Example:
 ```python
-# my_agent/tools/chart_tool.py
-def generate_chart(data: dict, chart_type: str) -> dict:
-    """Generate a chart from data."""
+# my_agent/tools/notification_tool.py
+def send_notification(user: str, message: str, channel: str = "email") -> dict:
+    """Send a notification to a user."""
     # Implementation
-    return {"status": "success", "chart_url": "..."}
+    return {"status": "sent", "channel": channel}
 ```
+
+### Adding a New Sub-Agent
+
+1. Create agent in `my_agent/agents/new_agent.py`
+2. Import in `my_agent/agent.py`
+3. Add to `sub_agents=[greeter, oip_expert, ticket_analytics, new_agent]`
+4. Update root_agent instructions with routing rules for the new agent
 
 ---
 
@@ -347,9 +442,12 @@ def generate_chart(data: dict, chart_type: str) -> dict:
 | Component | Technology |
 |-----------|------------|
 | Agent Framework | Google ADK (Agent Development Kit) |
+| API Server | FastAPI + Uvicorn (SSE streaming) |
+| Database | SQL Server (TickTraq) via pyodbc |
 | Vector Store | FAISS (faiss-cpu) |
 | Embeddings | OpenRouter (text-embedding-ada-002) |
-| LLM | Google Gemini 2.5 Flash |
+| LLM | Google Gemini 2.5 Flash (or OpenRouter/Grok via LiteLLM) |
+| Charts | Recharts (rendered in frontend from agent HTML) |
 | Data Validation | Pydantic v2 |
 | Document Parsing | PyMuPDF, python-docx |
 
@@ -454,220 +552,184 @@ python -c "from google.adk.agents import LlmAgent; print('google-adk OK')"
 
 ---
 
-## API Deployment (For Frontend Integration)
+## API Deployment (For OIP Integration)
 
-Instead of using `adk web`, you can run the agent as a REST API server.
+The agent runs as a REST API server with **5 endpoints** and **Server-Sent Events (SSE)** for real-time streaming. Every request must include the logged-in user's `username` so the agent can scope ticket data to that user.
 
-### Run API Server Locally
+> **Full API Reference:** See [`docs/API_REFERENCE.md`](docs/API_REFERENCE.md) for complete documentation with multiple request examples, SSE format details, stored procedure parameters, and error handling.
+
+### Run API Server
 
 ```bash
-# Option 1: Using uvicorn directly
-uvicorn main:app --host 0.0.0.0 --port 8080
-
-# Option 2: Using python
 python main.py
+# or: uvicorn main:app --host 0.0.0.0 --port 8080
 ```
 
 Server runs at `http://localhost:8080`
 
-### API Endpoints
+### Endpoints (5 Total)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/run_sse` | POST | ADK-compatible endpoint (matches adk web format) |
-| `/chat` | POST | Simple chat endpoint |
-| `/session/new` | POST | Create new session |
-| `/health` | GET | Health check |
+| Method | Target Endpoint | Current Prototype | Purpose |
+|--------|----------------|-------------------|---------|
+| `POST` | `/chat/session/start` | `/session/new` | Create a new chat session with user context |
+| `POST` | `/chat/message` | `/run_sse` | Send a message (streaming SSE or JSON) |
+| `GET` | `/chat/session/{id}` | _(not yet built)_ | Retrieve session details and history |
+| `DELETE` | `/chat/session/{id}` | _(not yet built)_ | Delete a chat session |
+| `GET` | `/health` | `/health` | Health check |
 
-> **Auto-Session Creation:** Sessions are created automatically on first use. Just pass any `sessionId` you want - if it doesn't exist, it will be created. No need to call `/session/new` first.
+### Known Users (Test Data)
+
+| Email | Username | Role |
+|-------|----------|------|
+| `engineer@ebttikar.com.sa` | `fieldengineer` | Field Engineer |
+| `logisticssupervisor@ebttikar.com.sa` | `logisticssupervisor` | Logistics Supervisor |
+| `residentengineer@ebttikar.com.sa` | `residentengineer` | Resident Engineer |
+| `operationsmanager@ebttikar.com.sa` | `operationsmanager` | Operations Manager |
+| `areeb@ebttikar.com` | `areeb` | Administrator |
+| `shamlankm@ebttikar.com` | `shamlankm` | Supervisor |
+| `ahmad@ebttikar.com` | `ahmad` | Engineer |
+
+> The `username` is the **short name** (e.g., `shamlankm`), not the email. This is passed to the SQL stored procedure as `@Username`.
 
 ---
 
-### Endpoint 1: `/run_sse` (ADK-Compatible with User Context)
+### Create Session: `POST /chat/session/start`
 
-**Request:**
 ```json
 {
-  "appName": "my_agent",
-  "userId": "user_123",
-  "sessionId": "session_abc",
-  "newMessage": {
-    "role": "user",
-    "parts": [{"text": "What are my tickets?"}]
-  },
-  "streaming": true,
-  "username": "john.doe",
-  "userRole": "Engineer",
-  "userRoleCode": "ENG",
+  "username": "shamlankm",
+  "userRole": "Supervisor",
+  "userRoleCode": "SUP",
   "projectNames": ["ANB", "Barclays"],
-  "teamNames": ["Maintenance", "Support"]
+  "teamNames": ["Maintenance"],
+  "regionNames": ["Riyadh"]
 }
 ```
 
-**Parameter Reference:**
+| Field | Type | Required | Description | Examples |
+|-------|------|----------|-------------|----------|
+| `username` | `string` | **MANDATORY** | User's short username, passed to DB as `@Username` | `"shamlankm"`, `"areeb"`, `"fieldengineer"` |
+| `userRole` | `string` | Optional | Display name of the user's role | `"Supervisor"`, `"Administrator"` |
+| `userRoleCode` | `string` | Optional | Short role code | `"SUP"`, `"ADM"`, `"ENG"` |
+| `projectNames` | `string[]` | Optional | Project filter. `null` = all projects | `["ANB"]`, `["ANB", "Barclays"]` |
+| `teamNames` | `string[]` | Optional | Team filter. `null` = all teams | `["Maintenance"]`, `["Development"]` |
+| `regionNames` | `string[]` | Optional | Region filter. `null` = all regions | `["Riyadh"]`, `["Eastern"]` |
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `appName` | string | Yes | Agent application name. Use `"my_agent"` |
-| `userId` | string | Yes | Unique identifier for the user |
-| `sessionId` | string | Yes | Conversation session ID. Auto-created if doesn't exist |
-| `newMessage` | object | Yes | The user's message object |
-| `newMessage.role` | string | Yes | Message role. Always `"user"` |
-| `newMessage.parts` | array | Yes | Array of message parts with `text` field |
-| `streaming` | boolean | No | `true` = SSE stream with status updates, `false` = JSON. Default: `false` |
-| **User Context** | | | |
-| `username` | string | **Yes** | Logged-in user's username (required for ticket queries) |
-| `userRole` | string | No | User's role name (e.g., "Engineer", "Supervisor", "Admin") |
-| `userRoleCode` | string | No | User's role code (e.g., "ENG", "SUP", "ADM") |
-| `projectNames` | array | No | Filter tickets by project(s): `["ANB", "Barclays"]` |
-| `projectCode` | string | No | Legacy single project filter: `"ANB"` |
-| `teamNames` | array | No | Filter tickets by team(s): `["Maintenance", "Support"]` |
-| `team` | string | No | Legacy single team filter: `"Maintenance"` |
+**Response:**
+```json
+{
+  "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+}
+```
 
-**Response (streaming):** Server-Sent Events with status updates:
+---
+
+### Send Message: `POST /chat/message`
+
+User context is sent on **every message** because filters can change mid-conversation (e.g., user switches project dropdown).
+
+```json
+{
+  "appName": "oip_assistant",
+  "userId": "shamlankm",
+  "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "newMessage": {
+    "role": "user",
+    "parts": [{ "text": "How many open tickets do I have for ANB?" }]
+  },
+  "streaming": true,
+  "username": "shamlankm",
+  "userRole": "Supervisor",
+  "userRoleCode": "SUP",
+  "projectNames": ["ANB"],
+  "teamNames": ["Maintenance"],
+  "regionNames": null
+}
+```
+
+#### Mandatory Fields
+
+| Field | Type | Description | Examples |
+|-------|------|-------------|----------|
+| `appName` | `string` | Always `"oip_assistant"` | `"oip_assistant"` |
+| `userId` | `string` | Same value as `username` | `"shamlankm"` |
+| `sessionId` | `string` | UUID from `/chat/session/start` | `"a1b2c3d4-..."` |
+| `newMessage.role` | `string` | Always `"user"` | `"user"` |
+| `newMessage.parts[].text` | `string` | The user's message | `"Show my tickets"` |
+| `streaming` | `boolean` | `true` for SSE, `false` for JSON | `true` |
+| `username` | `string` | Logged-in user's short username | `"shamlankm"`, `"ahmad"` |
+
+#### Optional Fields
+
+| Field | Type | Default | Description | Examples |
+|-------|------|---------|-------------|----------|
+| `userRole` | `string` | `null` | User's role display name | `"Supervisor"` |
+| `userRoleCode` | `string` | `null` | Short role code | `"SUP"` |
+| `projectNames` | `string[]` | `null` | Active project filter | `["ANB"]` |
+| `teamNames` | `string[]` | `null` | Active team filter | `["Maintenance"]` |
+| `regionNames` | `string[]` | `null` | Active region filter | `["Riyadh"]` |
+
+#### Minimal Valid Request (Only Mandatory Fields)
+
+```json
+{
+  "appName": "oip_assistant",
+  "userId": "ahmad",
+  "sessionId": "550e8400-e29b-41d4-a716-446655440000",
+  "newMessage": {
+    "role": "user",
+    "parts": [{ "text": "What are my tickets?" }]
+  },
+  "streaming": true,
+  "username": "ahmad"
+}
+```
+
+#### SSE Streaming Response
+
 ```
 data: {"status": "Analyzing your request..."}
-data: {"status": "Checking ticket data..."}
-data: {"status": "Generating visualization..."}
-data: {"text": "<final response with chart>"}
+data: {"status": "Fetching your tickets..."}
+data: {"text": "<p><strong>Ticket Summary</strong></p><ul><li>Open: 12</li></ul>"}
 data: [DONE]
 ```
 
-**Response (non-streaming):**
+- **`status`** events: Loading indicators shown in the UI
+- **`text`** event: Final HTML response from the agent
+- **`[DONE]`**: Stream complete signal
+
+#### Non-Streaming Response (`streaming: false`)
+
 ```json
 {
-  "response": "You have 20 tickets...",
-  "sessionId": "session_abc",
-  "userId": "user_123"
-}
-```
-
-**cURL Example (with all parameters):**
-```bash
-curl -X POST http://localhost:8080/run_sse \
-  -H "Content-Type: application/json" \
-  -d '{
-    "appName": "my_agent",
-    "userId": "user_123",
-    "sessionId": "session_abc",
-    "newMessage": {
-      "role": "user",
-      "parts": [{"text": "Show me my ANB tickets with a chart"}]
-    },
-    "streaming": true,
-    "username": "john.doe",
-    "userRole": "Engineer",
-    "projectNames": ["ANB"],
-    "teamNames": ["Maintenance"]
-  }'
-```
-
----
-
-### Endpoint 2: `/chat` (Simple)
-
-A simpler endpoint for basic chat interactions.
-
-**Request:**
-```json
-{
-  "message": "What are my tickets?",
-  "session_id": "session_abc",
-  "username": "john.doe",
-  "project_names": ["ANB"],
-  "team_names": ["Maintenance"]
-}
-```
-
-**Parameter Reference:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `message` | string | Yes | The user's question or message text |
-| `session_id` | string | No | Session ID for conversation continuity. Auto-generated if omitted |
-| `username` | string | **Yes** | Logged-in user's username (required for ticket queries) |
-| `project_names` | array | No | Filter tickets by project(s): `["ANB", "Barclays"]` |
-| `team_names` | array | No | Filter tickets by team(s): `["Maintenance"]` |
-
-**Response:**
-```json
-{
-  "response": "You have 20 tickets...",
-  "session_id": "session_abc"
-}
-```
-
-**cURL Example:**
-```bash
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "Show my suspended tickets",
-    "session_id": "session_abc",
-    "username": "john.doe",
-    "project_names": ["ANB"],
-    "team_names": ["Maintenance"]
-  }'
-```
-
-> **Note:** `username` is required for ticket queries. Project/team filters are optional - if omitted, shows all accessible tickets.
-
----
-
-### Endpoint 3: `/session/new`
-
-**Request:** (no body required)
-```bash
-curl -X POST http://localhost:8080/session/new
-```
-
-**Response:**
-```json
-{
-  "session_id": "550e8400-e29b-41d4-a716-446655440000"
+  "response": "<p>Your ticket summary...</p>",
+  "sessionId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "userId": "shamlankm"
 }
 ```
 
 ---
 
-### Frontend Integration (JavaScript)
+### Database Stored Procedure
 
-```javascript
-// Using /run_sse endpoint (ADK-compatible)
-const response = await fetch('http://localhost:8080/run_sse', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    appName: 'my_agent',
-    userId: 'user_123',
-    sessionId: 'session_abc',
-    newMessage: {
-      role: 'user',
-      parts: [{ text: 'What is OIP?' }]
-    },
-    streaming: false
-  })
-});
-const data = await response.json();
-console.log(data.response);  // "OIP (Operations Intelligence Platform) is..."
+The `ticket_analytics` agent calls:
 
-// Using /chat endpoint (simpler)
-const chatResponse = await fetch('http://localhost:8080/chat', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    message: 'What is OIP?',
-    session_id: 'session_abc'
-  })
-});
-const chatData = await chatResponse.json();
-console.log(chatData.response);
+```sql
+EXEC usp_Chatbot_GetTicketSummary
+    @Username      = 'shamlankm',       -- MANDATORY: from username field
+    @ProjectNames  = 'ANB,Barclays',    -- Optional: from projectNames array (CSV)
+    @TeamNames     = 'Maintenance',     -- Optional: from teamNames array (CSV)
+    @Month         = 1,                 -- Extracted from natural language
+    @Year          = 2026,              -- Extracted from natural language
+    @DateFrom      = '2026-01-01',      -- Extracted from natural language
+    @DateTo        = '2026-01-31'       -- Extracted from natural language
 ```
+
+Returns: `TotalTickets`, `OpenTickets`, `SuspendedTickets`, `CompletedTickets`, `PendingApproval`, `SLABreached`, `CompletionRate`, `Username`, `UserRole`, `ProjectFilter`, `TeamFilter`, `DateRange`, `Message`.
 
 ### Deploy to Cloud Run
 
 ```bash
-# Build and deploy
 gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/oip-agent
 gcloud run deploy oip-agent \
   --image gcr.io/YOUR_PROJECT_ID/oip-agent \
@@ -690,19 +752,23 @@ A modern chat interface built with Next.js 15 and ShadCN UI for interacting with
 | Component | Technology |
 |-----------|------------|
 | Framework | Next.js 15 (App Router) |
-| UI Components | ShadCN UI |
+| UI Components | ShadCN UI + Radix UI |
+| Charts | Recharts (pie, bar, gauge, line) |
 | Styling | Tailwind CSS v4 |
 | Language | TypeScript |
 | Icons | Lucide React |
-| State Management | React Hooks |
+| State Management | React Hooks + localStorage |
 
 ### Frontend Features
 
-- **Embeddable Chat Widget**: Floating chat icon with popup window
-- **Full-Screen Chat**: Dedicated `/chat` page with sidebar
-- **SSE Streaming**: Real-time streaming responses from the backend
-- **Chat History**: Persistent local storage for conversation history
-- **OIP Branding**: Colors matching the OIP application screenshots
+- **Embeddable Chat Widget**: Floating chat icon with popup window (460px wide)
+- **Full-Screen Chat**: Dedicated `/chat` page with sidebar and session history
+- **Interactive FAQ**: 7 categories, 16 questions with drill-down navigation and toggle button
+- **Dynamic Charts**: Recharts rendering (pie, bar, gauge, line) from agent HTML responses
+- **SSE Streaming**: Real-time status updates ("Fetching your tickets...") during agent processing
+- **Chat History**: Persistent local storage with search and session management
+- **User Context**: Login with username, project/team/region filter dropdowns
+- **OIP Branding**: Colors matching the OIP application
 
 ### Run the Frontend
 
@@ -739,7 +805,9 @@ frontend/
 │   │   │   ├── ChatInput.tsx
 │   │   │   ├── ChatHeader.tsx
 │   │   │   ├── ChatSidebar.tsx
-│   │   │   └── ChatFullScreen.tsx
+│   │   │   ├── ChatFullScreen.tsx
+│   │   │   ├── FAQSection.tsx    # Interactive FAQ with categories
+│   │   │   └── DynamicChart.tsx  # Recharts renderer
 │   │   └── ui/               # ShadCN UI components
 │   │
 │   ├── hooks/
@@ -748,6 +816,7 @@ frontend/
 │   │
 │   ├── lib/
 │   │   ├── api.ts            # API client for backend
+│   │   ├── faqData.ts        # FAQ categories and questions
 │   │   └── utils.ts          # Utilities
 │   │
 │   ├── config/
@@ -806,12 +875,15 @@ NEXT_PUBLIC_API_URL=http://localhost:8080
 
 ## Future Enhancements
 
+- [x] Chart generation tool (Recharts via `ticket_analytics` agent)
+- [x] Conversation memory (session state + localStorage)
+- [x] FAQ section with interactive categories
 - [ ] Hybrid search (BM25 + vector)
-- [ ] Chart generation tool
-- [ ] Conversation memory
 - [ ] Document update detection
 - [ ] Multi-language embeddings
 - [ ] Voice input support
+- [ ] `GET /chat/session/{id}` endpoint
+- [ ] `DELETE /chat/session/{id}` endpoint
 
 ---
 
