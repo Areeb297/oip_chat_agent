@@ -1,7 +1,9 @@
 // API Configuration for OIP Chat Agent
 
 export const API_CONFIG = {
-  baseUrl: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080',
+  // Production: /api (IIS reverse proxies to backend)
+  // Development: set NEXT_PUBLIC_API_URL=http://localhost:8080 in .env.development
+  baseUrl: process.env.NEXT_PUBLIC_API_URL || '/api',
   endpoints: {
     chat: '/chat',
     runSse: '/run_sse',
