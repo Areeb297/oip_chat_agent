@@ -78,31 +78,38 @@ const CustomTooltip = ({ active, payload, label }: { active?: boolean; payload?:
 
 // Custom label for pie/donut charts
 const renderCustomizedLabel = ({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }: {
-  cx: number;
-  cy: number;
-  midAngle: number;
-  innerRadius: number;
-  outerRadius: number;
-  percent: number;
-  name: string;
+  cx?: number;
+  cy?: number;
+  midAngle?: number;
+  innerRadius?: number;
+  outerRadius?: number;
+  percent?: number;
+  name?: string;
 }) => {
-  const RADIAN = Math.PI / 180;
-  const radius = innerRadius + (outerRadius - innerRadius) * 1.4;
-  const x = cx + radius * Math.cos(-midAngle * RADIAN);
-  const y = cy + radius * Math.sin(-midAngle * RADIAN);
+  const _cx = cx ?? 0;
+  const _cy = cy ?? 0;
+  const _midAngle = midAngle ?? 0;
+  const _innerRadius = innerRadius ?? 0;
+  const _outerRadius = outerRadius ?? 0;
+  const _percent = percent ?? 0;
 
-  if (percent < 0.05) return null; // Don't show label for tiny slices
+  const RADIAN = Math.PI / 180;
+  const radius = _innerRadius + (_outerRadius - _innerRadius) * 1.4;
+  const x = _cx + radius * Math.cos(-_midAngle * RADIAN);
+  const y = _cy + radius * Math.sin(-_midAngle * RADIAN);
+
+  if (_percent < 0.05) return null; // Don't show label for tiny slices
 
   return (
     <text
       x={x}
       y={y}
       fill="#374151"
-      textAnchor={x > cx ? 'start' : 'end'}
+      textAnchor={x > _cx ? 'start' : 'end'}
       dominantBaseline="central"
       className="text-xs font-medium"
     >
-      {`${name} (${(percent * 100).toFixed(0)}%)`}
+      {`${name ?? ''} (${(_percent * 100).toFixed(0)}%)`}
     </text>
   );
 };
