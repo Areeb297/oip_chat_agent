@@ -2,6 +2,7 @@
 # Run with: uvicorn main:app --host 0.0.0.0 --port 8080
 # Or: python main.py
 
+import asyncio
 import json
 import logging
 import os
@@ -33,6 +34,41 @@ def _md_to_html(text: str) -> str:
     # Strip any leaked filter tags from responses
     text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
     return text.strip()
+
+
+async def _generate_session_title(session_id: str, user_msg: str, assistant_msg: str):
+    """Generate a concise AI title for a chat session (runs as background task)."""
+    try:
+        import litellm
+        from my_agent.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, Models
+
+        response = await litellm.acompletion(
+            model=f"openrouter/{Models.GPT4O_MINI}",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Generate a concise 3-6 word title summarizing this conversation. "
+                        "Return ONLY the title text, no quotes, no punctuation at the end."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"User: {user_msg[:200]}\nAssistant: {assistant_msg[:300]}",
+                },
+            ],
+            api_key=OPENROUTER_API_KEY,
+            api_base=OPENROUTER_BASE_URL,
+            max_tokens=20,
+            temperature=0.5,
+        )
+
+        title = response.choices[0].message.content.strip().strip('"\'')
+        if title:
+            update_session_title(session_id, title[:100])
+            logger.debug("[TITLE] Generated title for session %s: %s", session_id, title)
+    except Exception as e:
+        logger.warning("[TITLE] Failed to generate title for session %s: %s", session_id, e)
 
 
 async def _load_history_into_session(session, session_id: str, session_service):
@@ -475,6 +511,10 @@ async def run_sse(request: RunSSERequest):
             # ── Persist the clean assistant response ──
             if clean_text and db_user_id is not None:
                 save_message(session_id, "assistant", clean_text)
+                # Update session title based on latest exchange (background)
+                asyncio.create_task(
+                    _generate_session_title(session_id, raw_user_text, clean_text)
+                )
 
             yield "data: [DONE]\n\n"
 
@@ -502,6 +542,10 @@ async def run_sse(request: RunSSERequest):
         # ── Persist assistant response ──
         if response_text and db_user_id is not None:
             save_message(session_id, "assistant", response_text)
+            # Update session title based on latest exchange (background)
+            asyncio.create_task(
+                _generate_session_title(session_id, raw_user_text, response_text)
+            )
 
         return {
             "response": response_text,
