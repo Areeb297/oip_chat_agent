@@ -5,7 +5,6 @@ Stores chat sessions and messages in SQL Server (ChatbotSessions / ChatbotMessag
 
 import logging
 from typing import Optional
-from datetime import datetime
 
 from .db_tools import get_db_connection
 
@@ -128,7 +127,9 @@ def get_sessions(user_id: int, limit: int = 50) -> list[dict]:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT TOP (?) Id, Title, CreatedAt, UpdatedAt
+            """SELECT TOP (?) CAST(Id AS NVARCHAR(36)) AS Id, Title,
+                      CONVERT(VARCHAR(30), CreatedAt, 127) AS CreatedAt,
+                      CONVERT(VARCHAR(30), UpdatedAt, 127) AS UpdatedAt
                FROM dbo.ChatbotSessions
                WHERE UserId = ? AND IsDeleted = 0
                ORDER BY UpdatedAt DESC""",
@@ -139,13 +140,6 @@ def get_sessions(user_id: int, limit: int = 50) -> list[dict]:
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         cursor.close()
         conn.close()
-
-        # Serialize datetimeoffset to ISO strings
-        for row in rows:
-            row["Id"] = str(row["Id"])
-            for dt_field in ("CreatedAt", "UpdatedAt"):
-                if row.get(dt_field):
-                    row[dt_field] = row[dt_field].isoformat()
 
         return rows
     except Exception as e:
@@ -159,7 +153,8 @@ def get_session_messages(session_id: str) -> list[dict]:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT Id, Role, Content, CreatedAt
+            """SELECT Id, Role, Content,
+                      CONVERT(VARCHAR(30), CreatedAt, 127) AS CreatedAt
                FROM dbo.ChatbotMessages
                WHERE SessionId = ?
                ORDER BY Id ASC""",
@@ -169,10 +164,6 @@ def get_session_messages(session_id: str) -> list[dict]:
         rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
         cursor.close()
         conn.close()
-
-        for row in rows:
-            if row.get("CreatedAt"):
-                row["CreatedAt"] = row["CreatedAt"].isoformat()
 
         return rows
     except Exception as e:
