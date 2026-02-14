@@ -3,6 +3,8 @@
 # Or: python main.py
 
 import json
+import logging
+import os
 import uuid
 from typing import Any, Optional, List
 from fastapi import FastAPI
@@ -12,6 +14,8 @@ from pydantic import BaseModel, Field
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
+
+logger = logging.getLogger("oip_chat_agent")
 
 from my_agent import root_agent
 from my_agent.tools.chat_history import (
@@ -27,13 +31,18 @@ from my_agent.tools.chat_history import (
 # Initialize FastAPI app
 app = FastAPI(title="OIP Chat Agent API", version="1.0.0")
 
-# Add CORS middleware for frontend integration
+# CORS — restrict to known frontend origins
+ALLOWED_ORIGINS = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,https://eco.onasi.care",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["POST", "GET", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 # Session service to manage conversation state
@@ -222,8 +231,7 @@ async def rename_session(session_id: str, body: TitleUpdate):
 @app.post("/run_sse")
 async def run_sse(request: RunSSERequest):
     """ADK-compatible endpoint for running agent (matches adk web format)"""
-    # Debug: Log raw request
-    print(f"[RAW REQUEST] Full request object: {request.model_dump()}")
+    logger.debug("[RAW REQUEST] %s", request.model_dump())
 
     user_id = request.userId
     session_id = request.sessionId
@@ -250,11 +258,8 @@ async def run_sse(request: RunSSERequest):
     elif request.region:
         region_names_csv = request.region
 
-    # Log user context for debugging/testing
-    print(f"[USER CONTEXT] username={username}, role={request.userRole}")
-    print(f"[USER CONTEXT] Raw request - projectNames={request.projectNames}, teamNames={request.teamNames}, regionNames={request.regionNames}")
-    print(f"[USER CONTEXT] Raw request - projectCode={request.projectCode}, team={request.team}, region={request.region}")
-    print(f"[USER CONTEXT] Resolved - projects={project_names_csv}, teams={team_names_csv}, regions={region_names_csv}")
+    logger.debug("[USER CONTEXT] username=%s, role=%s, projects=%s, teams=%s, regions=%s",
+                 username, request.userRole, project_names_csv, team_names_csv, region_names_csv)
 
     # Build user context state
     # Use empty string instead of None to ensure ADK state properly clears old values
@@ -285,9 +290,8 @@ async def run_sse(request: RunSSERequest):
     else:
         # Update existing session state with current project/team selection
         # This allows users to change filters mid-session
-        print(f"[SESSION UPDATE] Updating existing session {session_id} with: {user_state}")
+        logger.debug("[SESSION UPDATE] Updating session %s", session_id)
         session.state.update(user_state)
-        print(f"[SESSION UPDATE] Session state after update: {dict(session.state)}")
 
     # Extract text from message parts
     message_text = ""
@@ -307,7 +311,7 @@ async def run_sse(request: RunSSERequest):
 
     if filter_context:
         message_text = f"{filter_context}{message_text}"
-        print(f"[FILTER INJECTION] Added filter context to message: {filter_context}")
+        logger.debug("[FILTER INJECTION] %s", filter_context.strip())
 
     # Create user message content
     user_content = types.Content(
@@ -326,7 +330,7 @@ async def run_sse(request: RunSSERequest):
         ensure_session(session_id, db_user_id, title=raw_user_text[:100])
         save_message(session_id, "user", raw_user_text)
     else:
-        print(f"[CHAT HISTORY] Could not resolve DB userId for username={username}, skipping persistence")
+        logger.warning("[CHAT HISTORY] Could not resolve DB userId for username=%s, skipping persistence", username)
 
     if request.streaming:
         # SSE streaming response with status updates
@@ -378,7 +382,7 @@ async def run_sse(request: RunSSERequest):
                                     "create_project_comparison_chart": "Building comparison chart...",
                                 }
                                 status = tool_status_map.get(tool_name, "Processing...")
-                                print(f"[TOOL CALL] {tool_name} -> {status}")
+                                logger.debug("[TOOL CALL] %s -> %s", tool_name, status)
                                 yield f"data: {json.dumps({'status': status})}\n\n"
 
                 # Send final response

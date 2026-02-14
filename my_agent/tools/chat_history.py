@@ -28,36 +28,30 @@ def get_user_id_by_username(username: str) -> Optional[int]:
 
 def ensure_session(session_id: str, user_id: int, title: Optional[str] = None) -> bool:
     """
-    Create a ChatbotSession row if it doesn't already exist.
+    Create a ChatbotSession row if it doesn't already exist (atomic).
     Returns True if session was created, False if it already existed.
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Check if session already exists
-        cursor.execute(
-            "SELECT 1 FROM dbo.ChatbotSessions WHERE Id = ?",
-            session_id,
-        )
-        if cursor.fetchone():
-            cursor.close()
-            conn.close()
-            return False
-
-        # Insert new session
+        # Atomic insert — avoids race condition between check and insert
         cursor.execute(
             """INSERT INTO dbo.ChatbotSessions (Id, UserId, Title, CreatedAt, UpdatedAt, IsActive, IsDeleted)
-               VALUES (?, ?, ?, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), 1, 0)""",
+               SELECT ?, ?, ?, SYSDATETIMEOFFSET(), SYSDATETIMEOFFSET(), 1, 0
+               WHERE NOT EXISTS (SELECT 1 FROM dbo.ChatbotSessions WHERE Id = ?)""",
             session_id,
             user_id,
             title,
+            session_id,
         )
+        created = cursor.rowcount > 0
         conn.commit()
         cursor.close()
         conn.close()
-        logger.info(f"Created session {session_id} for user {user_id}")
-        return True
+        if created:
+            logger.info(f"Created session {session_id} for user {user_id}")
+        return created
     except Exception as e:
         logger.error(f"Failed to ensure session {session_id}: {e}")
         return False
