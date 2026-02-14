@@ -5,6 +5,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any, Optional, List
 from fastapi import FastAPI
@@ -14,9 +15,61 @@ from pydantic import BaseModel, Field
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.agents.run_config import RunConfig, StreamingMode
+from google.adk.events import Event
 from google.genai import types
 
 logger = logging.getLogger("oip_chat_agent")
+
+
+def _md_to_html(text: str) -> str:
+    """Convert common markdown patterns to HTML so the frontend always gets clean HTML."""
+    if not text:
+        return text
+    # Bold: **text** or __text__ → <strong>text</strong>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+    text = re.sub(r'__(.+?)__', r'<strong>\1</strong>', text)
+    # Italic: *text* or _text_ → <em>text</em>  (but not inside HTML tags)
+    text = re.sub(r'(?<![<\w])[\*](.+?)[\*](?![>])', r'<em>\1</em>', text)
+    # Strip any leaked filter tags from responses
+    text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
+    return text.strip()
+
+
+async def _load_history_into_session(session, session_id: str, session_service):
+    """Load conversation history from DB into ADK session if it has no events.
+
+    This ensures the agent has context of previous messages even after server restart.
+    """
+    if session.events:
+        return  # Already has in-memory history
+
+    db_messages = get_session_messages(session_id)
+    if not db_messages:
+        return
+
+    for i, msg in enumerate(db_messages):
+        role = msg.get("Role", "user")
+        content_text = msg.get("Content", "")
+        if not content_text:
+            continue
+
+        # Map DB role to ADK Content role
+        adk_role = "user" if role == "user" else "model"
+        author = "user" if role == "user" else "oip_assistant"
+
+        event = Event(
+            author=author,
+            invocation_id=f"history_{i}",
+            content=types.Content(
+                role=adk_role,
+                parts=[types.Part.from_text(text=content_text)],
+            ),
+            partial=False,
+        )
+        await session_service.append_event(session, event)
+
+    logger.debug("[HISTORY] Loaded %d messages into session %s", len(db_messages), session_id)
+
 
 from my_agent import root_agent
 from my_agent.tools.chat_history import (
@@ -175,7 +228,7 @@ async def chat(request: ChatRequest):
                     if hasattr(part, "text") and part.text:
                         response_text = part.text  # Use last final response
 
-    return ChatResponse(response=response_text, session_id=session_id)
+    return ChatResponse(response=_md_to_html(response_text), session_id=session_id)
 
 
 @app.post("/session/new")
@@ -294,6 +347,9 @@ async def run_sse(request: RunSSERequest):
         logger.debug("[SESSION UPDATE] Updating session %s", session_id)
         session.state.update(user_state)
 
+    # Load conversation history from DB into ADK session (e.g. after server restart)
+    await _load_history_into_session(session, session_id, session_service)
+
     # Extract text from message parts
     message_text = ""
     for part in request.newMessage.parts:
@@ -343,7 +399,8 @@ async def run_sse(request: RunSSERequest):
 
             last_agent = None
             last_tool = None
-            full_response_text = ""
+            streamed_text = ""       # text already sent to client via partial chunks
+            final_response_text = "" # complete text from the final event (for DB)
 
             async for event in runner.run_async(
                 user_id=user_id,
@@ -392,20 +449,32 @@ async def run_sse(request: RunSSERequest):
                     if event.content and event.content.parts:
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text:
-                                full_response_text += part.text
+                                streamed_text += part.text
                                 yield f"data: {json.dumps({'text': part.text})}\n\n"
 
-                # ── Send final (non-partial) response ──
+                # ── Final response: only send if we haven't streamed partials ──
                 elif event.is_final_response():
                     if event.content and event.content.parts:
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text:
-                                full_response_text += part.text
-                                yield f"data: {json.dumps({'text': part.text})}\n\n"
+                                final_response_text = part.text
+                                # Only send to client if no partial chunks were streamed
+                                # (avoids duplicate text)
+                                if not streamed_text:
+                                    yield f"data: {json.dumps({'text': part.text})}\n\n"
 
-            # ── Persist the complete assistant response ──
-            if full_response_text and db_user_id is not None:
-                save_message(session_id, "assistant", full_response_text)
+            # ── Post-process: convert any markdown to HTML and strip filter tags ──
+            raw_text = final_response_text or streamed_text
+            clean_text = _md_to_html(raw_text) if raw_text else ""
+
+            # Send the complete, cleaned HTML as a final replacement event
+            # so the frontend can swap out any raw streamed text
+            if clean_text:
+                yield f"data: {json.dumps({'html': clean_text})}\n\n"
+
+            # ── Persist the clean assistant response ──
+            if clean_text and db_user_id is not None:
+                save_message(session_id, "assistant", clean_text)
 
             yield "data: [DONE]\n\n"
 
@@ -426,6 +495,9 @@ async def run_sse(request: RunSSERequest):
                     for part in event.content.parts:
                         if hasattr(part, "text") and part.text:
                             response_text = part.text
+
+        # ── Post-process: convert markdown to HTML and strip filter tags ──
+        response_text = _md_to_html(response_text)
 
         # ── Persist assistant response ──
         if response_text and db_user_id is not None:

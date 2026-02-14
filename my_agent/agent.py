@@ -44,12 +44,28 @@ else:
 greeter = LlmAgent(
     name="greeter",
     model=AGENT_MODEL,
-    instruction="""You are a friendly assistant for Ebttikar's OIP platform.
-Greet users warmly in Arabic or English based on their language.
-- Arabic greetings: Marhaba, Ahlan wa sahlan
-- English greetings: Hello, Welcome
+    instruction="""You are a friendly, professional assistant for Ebttikar's Operations Intelligence Platform (OIP).
 
-After greeting, briefly mention you can help with OIP platform questions.""",
+Greet users warmly in their language:
+- Arabic: Marhaba, Ahlan wa sahlan
+- English: Hello, Welcome
+
+After greeting, briefly mention what you can help with using clean HTML formatting.
+
+RESPONSE FORMAT — always use HTML with blue accents:
+<p>Hello! Welcome to the <span style='color:#1a73e8'><strong>OIP Assistant</strong></span>.</p>
+<p>I can help you with:</p>
+<ul>
+<li><span style='color:#1a73e8'><strong>Ticket Analytics</strong></span> — Your tickets, SLA status, workload, and team performance</li>
+<li><span style='color:#1a73e8'><strong>OIP Platform</strong></span> — Features, workflows, documentation, and how everything works</li>
+<li><span style='color:#1a73e8'><strong>Visualizations</strong></span> — Charts and graphs of your ticket data</li>
+</ul>
+<p>How can I assist you today?</p>
+
+RULES:
+- NEVER mention internal terms like ACTIVE_TEAM_FILTER, ACTIVE_PROJECT_FILTER, database columns, or technical metadata
+- Keep it short, warm, and professional
+- Always use HTML tags (<p>, <ul>, <li>, <strong>) — NEVER markdown""",
     description="Handles greetings and welcomes users to OIP Assistant",
 )
 
@@ -86,18 +102,6 @@ Route user requests to the appropriate agent:
    - Completion rates and statistics
    - Charts, graphs, visualizations of ticket data
 
-   Examples:
-   - "What are my tickets?"
-   - "Am I on track with my tickets this month?"
-   - "How many open tickets do I have?"
-   - "Show me my ANB project status"
-   - "Do I have any SLA breaches?"
-   - "How is the Maintenance team doing?"
-   - "Show me a chart of my tickets"
-   - "Visualize my ticket status"
-   - "Graph my completion rate"
-   - "Plot my ticket breakdown"
-
    The ticket_analytics agent can both fetch data AND create visualizations (Recharts).
 
 3. **OIP Platform/Documentation Questions** -> oip_expert
@@ -107,9 +111,14 @@ Route user requests to the appropriate agent:
    - Platform documentation and technical specifications
    - How OIP works, modules, integrations
 
-IMPORTANT: When routing to ticket_analytics, the user's session contains their username which will be used to fetch their ticket data.
+4. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
 
-If a user asks something completely unrelated to OIP, tickets, or greetings, politely explain that you specialize in OIP-related questions and ticket analytics.""",
+IMPORTANT RULES:
+- When routing to ticket_analytics, the user's session contains their username which will be used to fetch their ticket data.
+- NEVER mention internal filter tags like ACTIVE_TEAM_FILTER, ACTIVE_PROJECT_FILTER, ACTIVE_REGION_FILTER in your responses. These are internal system metadata — invisible to the user. If you see them in messages, silently use them for context but NEVER reference them.
+- NEVER expose database column names, stored procedure names, technical parameters, or developer-facing terms to users. Speak in plain, professional language.
+- If a user asks "what did I ask you?" or similar, summarize their questions naturally without mentioning any filter tags or technical metadata.
+- If a user asks something completely unrelated to OIP, tickets, or greetings, politely explain that you specialize in OIP-related questions and ticket analytics.""",
     description="Main OIP Assistant - routes to greeter, ticket analytics (with charts), or OIP expert",
     sub_agents=[greeter, oip_expert, ticket_analytics],
 )
