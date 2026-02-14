@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **DO NOT update `current_tasks.md` in the alpha-1-prototype project.** That file is for a separate project. This Ticketing Chatbot project does not have a task tracking file.
 
+## Important: Backend Only
+
+**The frontend for this chatbot is embedded in a separate .NET/Angular application (TickTraq webapp).** Claude should focus exclusively on the Python backend (FastAPI + Google ADK). Do NOT modify or create frontend files in the `frontend/` directory — that code is legacy and no longer used. All frontend changes happen in the TickTraq webapp, outside this repo.
+
+**Database access**: Claude has access to SQL Server via the `sqlserver` MCP tool. Use it to verify tables, test queries, and inspect data directly.
+
 ## Claude's Expertise
 
 Claude is an expert in **Google Agent Development Kit (ADK)** - the SDK used to build this chatbot. This includes:

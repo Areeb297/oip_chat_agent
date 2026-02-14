@@ -14,6 +14,15 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from my_agent import root_agent
+from my_agent.tools.chat_history import (
+    get_user_id_by_username,
+    ensure_session,
+    save_message,
+    update_session_title,
+    get_sessions,
+    get_session_messages,
+    delete_session,
+)
 
 # Initialize FastAPI app
 app = FastAPI(title="OIP Chat Agent API", version="1.0.0")
@@ -172,6 +181,44 @@ async def new_session():
     return {"session_id": session_id}
 
 
+# ---------------------------------------------------------------------------
+# Chat history endpoints (SQL Server persistence)
+# ---------------------------------------------------------------------------
+
+@app.get("/sessions")
+async def list_sessions(userId: int):
+    """Return the user's chat sessions for the sidebar."""
+    rows = get_sessions(user_id=userId)
+    return {"sessions": rows}
+
+
+@app.get("/sessions/{session_id}/messages")
+async def load_session_messages(session_id: str):
+    """Return all messages for a given session."""
+    msgs = get_session_messages(session_id)
+    return {"messages": msgs}
+
+
+@app.delete("/sessions/{session_id}")
+async def remove_session(session_id: str):
+    """Soft-delete a chat session."""
+    ok = delete_session(session_id)
+    if ok:
+        return {"success": True}
+    return {"success": False, "error": "Session not found or already deleted"}
+
+
+class TitleUpdate(BaseModel):
+    title: str
+
+
+@app.patch("/sessions/{session_id}/title")
+async def rename_session(session_id: str, body: TitleUpdate):
+    """Rename a chat session."""
+    ok = update_session_title(session_id, body.title)
+    return {"success": ok}
+
+
 @app.post("/run_sse")
 async def run_sse(request: RunSSERequest):
     """ADK-compatible endpoint for running agent (matches adk web format)"""
@@ -268,6 +315,19 @@ async def run_sse(request: RunSSERequest):
         parts=[types.Part.from_text(text=message_text)],
     )
 
+    # ── Persist: ensure session + save user message (raw text, no filter tags) ──
+    raw_user_text = ""
+    for part in request.newMessage.parts:
+        if part.text:
+            raw_user_text += part.text
+
+    db_user_id = get_user_id_by_username(username)
+    if db_user_id is not None:
+        ensure_session(session_id, db_user_id, title=raw_user_text[:100])
+        save_message(session_id, "user", raw_user_text)
+    else:
+        print(f"[CHAT HISTORY] Could not resolve DB userId for username={username}, skipping persistence")
+
     if request.streaming:
         # SSE streaming response with status updates
         async def event_generator():
@@ -276,6 +336,7 @@ async def run_sse(request: RunSSERequest):
 
             last_agent = None
             last_tool = None
+            final_response_text = ""
 
             async for event in runner.run_async(
                 user_id=user_id,
@@ -325,8 +386,14 @@ async def run_sse(request: RunSSERequest):
                     if event.content and event.content.parts:
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text:
+                                final_response_text = part.text
                                 data = {"text": part.text}
                                 yield f"data: {json.dumps(data)}\n\n"
+
+            # ── Persist assistant response ──
+            if final_response_text and db_user_id is not None:
+                save_message(session_id, "assistant", final_response_text)
+
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
@@ -346,6 +413,10 @@ async def run_sse(request: RunSSERequest):
                     for part in event.content.parts:
                         if hasattr(part, "text") and part.text:
                             response_text = part.text
+
+        # ── Persist assistant response ──
+        if response_text and db_user_id is not None:
+            save_message(session_id, "assistant", response_text)
 
         return {
             "response": response_text,
