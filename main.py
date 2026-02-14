@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
+from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.genai import types
 
 logger = logging.getLogger("oip_chat_agent")
@@ -333,33 +334,35 @@ async def run_sse(request: RunSSERequest):
         logger.warning("[CHAT HISTORY] Could not resolve DB userId for username=%s, skipping persistence", username)
 
     if request.streaming:
-        # SSE streaming response with status updates
+        # SSE streaming response with token-level streaming
+        stream_mode = StreamingMode.SSE if request.streaming else StreamingMode.NONE
+
         async def event_generator():
             # Send initial status
             yield f"data: {json.dumps({'status': 'Analyzing your request...'})}\n\n"
 
             last_agent = None
             last_tool = None
-            final_response_text = ""
+            full_response_text = ""
 
             async for event in runner.run_async(
                 user_id=user_id,
                 session_id=session_id,
                 new_message=user_content,
+                run_config=RunConfig(streaming_mode=stream_mode),
             ):
                 # Track agent transfers for status updates
                 if hasattr(event, 'author') and event.author:
                     agent_name = event.author
                     if agent_name != last_agent:
                         last_agent = agent_name
-                        # Map agent names to friendly status messages
                         status_map = {
                             "oip_assistant": "Processing your request...",
                             "oip_expert": "Consulting OIP documentation...",
                             "ticket_analytics": "Checking ticket data...",
                             "greeter": "Preparing response...",
                         }
-                        status = status_map.get(agent_name, f"Working on it...")
+                        status = status_map.get(agent_name, "Working on it...")
                         yield f"data: {json.dumps({'status': status})}\n\n"
 
                 # Track tool calls for status updates
@@ -373,7 +376,6 @@ async def run_sse(request: RunSSERequest):
                                     "search_oip_documents": "Searching documentation...",
                                     "get_ticket_summary": "Fetching your tickets...",
                                     "get_current_date": "Getting date info...",
-                                    # Chart tools
                                     "create_chart_from_session": "Generating visualization...",
                                     "create_chart": "Creating chart...",
                                     "create_ticket_status_chart": "Building status chart...",
@@ -385,18 +387,25 @@ async def run_sse(request: RunSSERequest):
                                 logger.debug("[TOOL CALL] %s -> %s", tool_name, status)
                                 yield f"data: {json.dumps({'status': status})}\n\n"
 
-                # Send final response
-                if event.is_final_response():
+                # ── Stream partial text chunks as they arrive ──
+                if getattr(event, 'partial', False):
                     if event.content and event.content.parts:
                         for part in event.content.parts:
                             if hasattr(part, "text") and part.text:
-                                final_response_text = part.text
-                                data = {"text": part.text}
-                                yield f"data: {json.dumps(data)}\n\n"
+                                full_response_text += part.text
+                                yield f"data: {json.dumps({'text': part.text})}\n\n"
 
-            # ── Persist assistant response ──
-            if final_response_text and db_user_id is not None:
-                save_message(session_id, "assistant", final_response_text)
+                # ── Send final (non-partial) response ──
+                elif event.is_final_response():
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            if hasattr(part, "text") and part.text:
+                                full_response_text += part.text
+                                yield f"data: {json.dumps({'text': part.text})}\n\n"
+
+            # ── Persist the complete assistant response ──
+            if full_response_text and db_user_id is not None:
+                save_message(session_id, "assistant", full_response_text)
 
             yield "data: [DONE]\n\n"
 
