@@ -126,15 +126,15 @@ app = FastAPI(title="OIP Chat Agent API", version="1.0.0")
 # CORS — restrict to known frontend origins
 ALLOWED_ORIGINS = os.getenv(
     "CORS_ORIGINS",
-    "http://localhost:3000,https://eco.onasi.care",
+    "http://localhost:3000,http://eco.onasi.care,https://eco.onasi.care",
 ).split(",")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["POST", "GET", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Session service to manage conversation state
