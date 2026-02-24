@@ -74,6 +74,10 @@ htmlcov/
 .mypy_cache/
 
 
+# Frontend (now in .NET/TickTraq webapp)
+frontend/
+node_modules/
+
 # OIP Images
 /OIP_images
 
