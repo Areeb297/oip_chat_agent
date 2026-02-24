@@ -571,3 +571,4 @@ async def run_sse(request: RunSSERequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8080)
+    # uvicorn.run(app, host="0.0.0.0", port=8060) - Runs in the server.
