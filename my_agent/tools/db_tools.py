@@ -37,18 +37,22 @@ def get_db_connection():
     # Build connection string from env vars or use defaults
     server = os.getenv("SQL_SERVER_HOST", "LAPTOP-3BGTAL2E\\SQLEXPRESS")
     database = os.getenv("SQL_SERVER_DATABASE", "TickTraq")
-    user = os.getenv("SQL_SERVER_USER", "areeb297")
-    password = os.getenv("SQL_SERVER_PASSWORD", "Nightingale@0987")
     driver = os.getenv("SQL_SERVER_DRIVER", "ODBC Driver 17 for SQL Server")
+    trusted = os.getenv("SQL_SERVER_TRUSTED_CONNECTION", "").lower()
 
     connection_string = (
         f"DRIVER={{{driver}}};"
         f"SERVER={server};"
         f"DATABASE={database};"
-        f"UID={user};"
-        f"PWD={password};"
         "TrustServerCertificate=yes;"
     )
+
+    if trusted in ("yes", "true", "1"):
+        connection_string += "Trusted_Connection=yes;"
+    else:
+        user = os.getenv("SQL_SERVER_USER", "")
+        password = os.getenv("SQL_SERVER_PASSWORD", "")
+        connection_string += f"UID={user};PWD={password};"
 
     return pyodbc.connect(connection_string)
 

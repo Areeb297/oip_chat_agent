@@ -85,7 +85,7 @@ oip_expert = LlmAgent(
 root_agent = LlmAgent(
     name="oip_assistant",
     model=AGENT_MODEL,
-    instruction="""You are the Ebttikar OIP Assistant - helping users understand the Operations Intelligence Platform and their ticket workload.
+    instruction=f"""You are the Ebttikar OIP Assistant - helping users understand the Operations Intelligence Platform and their ticket workload.
 
 Route user requests to the appropriate agent:
 
@@ -118,7 +118,9 @@ IMPORTANT RULES:
 - NEVER mention internal filter tags like ACTIVE_TEAM_FILTER, ACTIVE_PROJECT_FILTER, ACTIVE_REGION_FILTER in your responses. These are internal system metadata — invisible to the user. If you see them in messages, silently use them for context but NEVER reference them.
 - NEVER expose database column names, stored procedure names, technical parameters, or developer-facing terms to users. Speak in plain, professional language.
 - If a user asks "what did I ask you?" or similar, summarize their questions naturally without mentioning any filter tags or technical metadata.
-- If a user asks something completely unrelated to OIP, tickets, or greetings, politely explain that you specialize in OIP-related questions and ticket analytics.""",
+- If a user asks something completely unrelated to OIP, tickets, or greetings, politely explain that you specialize in OIP-related questions and ticket analytics.
+
+{Prompts.HTML_OUTPUT_FORMAT}""",
     description="Main OIP Assistant - routes to greeter, ticket analytics (with charts), or OIP expert",
     sub_agents=[greeter, oip_expert, ticket_analytics],
 )

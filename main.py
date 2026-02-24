@@ -26,13 +26,15 @@ def _md_to_html(text: str) -> str:
     """Convert common markdown patterns to HTML so the frontend always gets clean HTML."""
     if not text:
         return text
+    # Strip any leaked filter tags from responses
+    text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
+    # Remove markdown headers (## Heading → <strong>Heading</strong>)
+    text = re.sub(r'^#{1,4}\s+(.+)$', r'<p><strong>\1</strong></p>', text, flags=re.MULTILINE)
     # Bold: **text** or __text__ → <strong>text</strong>
     text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
     text = re.sub(r'__(.+?)__', r'<strong>\1</strong>', text)
     # Italic: *text* or _text_ → <em>text</em>  (but not inside HTML tags)
     text = re.sub(r'(?<![<\w])[\*](.+?)[\*](?![>])', r'<em>\1</em>', text)
-    # Strip any leaked filter tags from responses
-    text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
     return text.strip()
 
 
@@ -261,6 +263,9 @@ async def chat(request: ChatRequest):
         if event.is_final_response():
             if event.content and event.content.parts:
                 for part in event.content.parts:
+                    # Skip thinking/reasoning parts (Gemini built-in thinking)
+                    if getattr(part, 'thought', False):
+                        continue
                     if hasattr(part, "text") and part.text:
                         response_text = part.text  # Use last final response
 
@@ -484,6 +489,9 @@ async def run_sse(request: RunSSERequest):
                 if getattr(event, 'partial', False):
                     if event.content and event.content.parts:
                         for part in event.content.parts:
+                            # Skip thinking/reasoning parts (Gemini built-in thinking)
+                            if getattr(part, 'thought', False):
+                                continue
                             if hasattr(part, "text") and part.text:
                                 streamed_text += part.text
                                 yield f"data: {json.dumps({'text': part.text})}\n\n"
@@ -492,6 +500,9 @@ async def run_sse(request: RunSSERequest):
                 elif event.is_final_response():
                     if event.content and event.content.parts:
                         for part in event.content.parts:
+                            # Skip thinking/reasoning parts
+                            if getattr(part, 'thought', False):
+                                continue
                             if hasattr(part, "text") and part.text:
                                 final_response_text = part.text
                                 # Only send to client if no partial chunks were streamed
@@ -533,6 +544,9 @@ async def run_sse(request: RunSSERequest):
             if event.is_final_response():
                 if event.content and event.content.parts:
                     for part in event.content.parts:
+                        # Skip thinking/reasoning parts
+                        if getattr(part, 'thought', False):
+                            continue
                         if hasattr(part, "text") and part.text:
                             response_text = part.text
 
