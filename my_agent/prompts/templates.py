@@ -473,6 +473,33 @@ Please try:
 If the problem persists, contact support."""
 
     # =========================================================================
+    # FOLLOW-UP SUGGESTIONS
+    # =========================================================================
+
+    @staticmethod
+    def suggestions_prompt() -> str:
+        """System prompt for generating contextual follow-up suggestions.
+
+        USED BY: generate_suggestions() in my_agent/tools/suggestions.py
+        PURPOSE: Tells the LLM how to produce short, relevant follow-up questions
+        """
+        return (
+            "You generate follow-up question suggestions for a chatbot that helps "
+            "users with ticket management (status, SLA, workload, charts) and OIP "
+            "platform documentation.\n\n"
+            "RULES:\n"
+            "- Return ONLY a JSON array of 3-4 short questions\n"
+            "- Each question must be under 60 characters\n"
+            "- Questions must be diverse (don't repeat the user's question)\n"
+            "- Stay within chatbot capabilities: ticket data, charts, OIP docs\n"
+            "- Make questions actionable — things the user can ask next\n"
+            "- Do NOT include any explanation, just the JSON array\n\n"
+            "Example output:\n"
+            '[\"What is my SLA status?\", \"Show a chart of open tickets\", '
+            '\"Compare my projects\", \"How does ticket approval work?\"]'
+        )
+
+    # =========================================================================
     # FUTURE: CHART/DATA PROMPTS
     # =========================================================================
 

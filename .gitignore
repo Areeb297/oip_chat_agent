@@ -84,3 +84,11 @@ node_modules/
 
 # OIP TicketTraq Database
 /OIP_Database
+
+# Docs (architecture notes - not for repo)
+docs/architecture.md
+
+# Course/Reference materials
+Agentic Workflows - I.txt
+Agentic Workflows - II.txt
+Building Agents - 1.txt

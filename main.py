@@ -110,6 +110,7 @@ async def _load_history_into_session(session, session_id: str, session_service):
 
 
 from my_agent import root_agent
+from my_agent.tools.suggestions import generate_suggestions
 from my_agent.tools.chat_history import (
     get_user_id_by_username,
     ensure_session,
@@ -527,6 +528,26 @@ async def run_sse(request: RunSSERequest):
                     _generate_session_title(session_id, raw_user_text, clean_text)
                 )
 
+            # ── Generate follow-up suggestions (non-blocking) ──
+            try:
+                # Fetch current session state for context
+                current_session = await session_service.get_session(
+                    app_name="oip_assistant",
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                s_state = dict(current_session.state) if current_session and current_session.state else {}
+                suggestions = await generate_suggestions(
+                    user_message=raw_user_text,
+                    agent_response=raw_text or "",
+                    agent_name=last_agent or "oip_assistant",
+                    session_state=s_state,
+                )
+                if suggestions:
+                    yield f"data: {json.dumps({'suggestions': suggestions})}\n\n"
+            except Exception as e:
+                logger.debug("[SUGGESTIONS] Skipped: %s", e)
+
             yield "data: [DONE]\n\n"
 
         return StreamingResponse(
@@ -566,11 +587,33 @@ async def run_sse(request: RunSSERequest):
                 _generate_session_title(session_id, raw_user_text, response_text)
             )
 
-        return {
+        # ── Generate follow-up suggestions ──
+        suggestions = []
+        try:
+            current_session = await session_service.get_session(
+                app_name="oip_assistant",
+                user_id=user_id,
+                session_id=session_id,
+            )
+            s_state = dict(current_session.state) if current_session and current_session.state else {}
+            suggestions = await generate_suggestions(
+                user_message=raw_user_text,
+                agent_response=response_text or "",
+                agent_name="oip_assistant",
+                session_state=s_state,
+            )
+        except Exception as e:
+            logger.debug("[SUGGESTIONS] Skipped (non-streaming): %s", e)
+
+        result = {
             "response": response_text,
             "sessionId": session_id,
             "userId": user_id,
         }
+        if suggestions:
+            result["suggestions"] = suggestions
+
+        return result
 
 
 if __name__ == "__main__":

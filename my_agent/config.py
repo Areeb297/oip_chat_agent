@@ -94,6 +94,17 @@ class AgentConfig:
     MAX_TOKENS = 1000
     TEMPERATURE = 0.7
 
+
+class SuggestionsConfig:
+    """Follow-up suggestion generation settings"""
+    ENABLED = True
+    LLM_MODEL = Models.GPT4O_MINI
+    LLM_TIMEOUT = 3.0          # seconds before falling back to rule-based
+    MAX_SUGGESTIONS = 4
+    LLM_MAX_TOKENS = 150
+    LLM_TEMPERATURE = 0.7
+    USE_LLM = True             # False = rule-based only, skip LLM call
+
 # =============================================================================
 # VALIDATION
 # =============================================================================

@@ -343,13 +343,24 @@ def create_chart(
     }
 
     # Add chart-specific configurations
-    # NOTE: Always use donut chart instead of pie for better aesthetics
-    if chart_type == ChartType.PIE.value or chart_type == ChartType.DONUT.value:
-        config["type"] = "donut"  # Always use donut
+    if chart_type == ChartType.PIE.value:
+        # True pie chart - solid filled circle with wedge slices (no hole)
+        config["type"] = "pie"
+        config["innerRadius"] = 0
+        config["outerRadius"] = 100
+        config["showLabels"] = True
+        config["labelType"] = "percentage"
+        # Position legend to the right to avoid overlapping with slice labels
+        config["styling"]["legendPosition"] = "right"
+    elif chart_type == ChartType.DONUT.value:
+        # Donut chart - ring with hollow center
+        config["type"] = "donut"
         config["innerRadius"] = 60
         config["outerRadius"] = 100
         config["showLabels"] = True
         config["labelType"] = "percentage"
+        # Position legend to the right to avoid overlapping with slice labels
+        config["styling"]["legendPosition"] = "right"
     elif chart_type == ChartType.GAUGE.value and data:
         value = data[0].get(y_keys[0], 0) if data else 0
         config["value"] = value
@@ -429,13 +440,14 @@ def create_ticket_status_chart(
     if not data:
         return "<p>No ticket data available to chart.</p>"
 
-    # Generate the pie chart
+    # Generate the donut chart (default for status distribution)
+    # Users can request a true pie chart via create_chart_from_session with chart_type="pie"
     chart_output = create_chart(
         data=data,
         title=title,
         x_key="status",
         y_keys=["count"],
-        chart_type="pie",
+        chart_type="donut",
         description="Distribution of tickets by current status",
         colors=[d["color"] for d in data]
     )
