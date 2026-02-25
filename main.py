@@ -532,6 +532,11 @@ async def run_sse(request: RunSSERequest):
         return StreamingResponse(
             event_generator(),
             media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
+            },
         )
     else:
         # Non-streaming response
