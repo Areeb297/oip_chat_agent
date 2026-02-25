@@ -27,11 +27,13 @@ Refer to ADK documentation and patterns when extending or debugging this project
 
 ## Project Overview
 
-This is the **Ebttikar OIP Assistant** - a full-stack multi-agent chatbot for the Operations Intelligence Platform (OIP) and TickTraq ticket management system. Built with:
+This is the **Ebttikar OIP Assistant** - a multi-agent chatbot for the Operations Intelligence Platform (OIP) and TickTraq ticket management system. Built with:
 - **Backend**: Google ADK + FastAPI with streaming SSE
-- **Frontend**: Next.js 16 + React 19 + Recharts
+- **Frontend**: TickTraq .NET/Angular webapp (separate repo)
 - **Vector Store**: FAISS with OpenRouter embeddings
 - **Database**: SQL Server (TickTraq)
+
+**Architecture diagrams**: See [`docs/architecture.md`](docs/architecture.md) for full Mermaid diagrams covering agent hierarchy, request flow, tool ecosystem, session state, and data pipelines.
 
 ## Common Commands
 
@@ -56,51 +58,46 @@ adk web my_agent
 
 # Test agent import
 python -c "from my_agent import root_agent; print(root_agent)"
-
-# Frontend commands (from frontend/ directory)
-cd frontend
-npm install
-npm run dev    # Development server on port 3000
-npm run build  # Production build
 ```
 
 ## System Architecture
 
+> Full interactive Mermaid diagrams: [`docs/architecture.md`](docs/architecture.md)
+
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                   Frontend (Next.js 16 + React 19)              │
-│      Pages: Login, Home, Full Chat + Floating Widget            │
-│      Components: ChatFullScreen, ChatMessage, DynamicChart      │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                    HTTP/Streaming REST API (SSE)
-                              │
-┌─────────────────────────────────────────────────────────────────┐
-│                 Backend (FastAPI + Google ADK)                  │
-│                        port 8080                                │
-│                                                                 │
-│  ┌───────────────────────────────────────────────────────────┐  │
-│  │         root_agent (Coordinator) - Gemini-2.5-flash       │  │
-│  │   Routes: Greetings → greeter                             │  │
-│  │           Ticket queries → ticket_analytics               │  │
-│  │           OIP questions → oip_expert                      │  │
-│  └───────────────────────────────────────────────────────────┘  │
-│         │                    │                    │              │
-│         ▼                    ▼                    ▼              │
-│  ┌────────────┐    ┌─────────────────┐    ┌──────────────┐     │
-│  │  greeter   │    │ ticket_analytics│    │  oip_expert  │     │
-│  │(Greetings) │    │  (DB + Charts)  │    │   (RAG Q&A)  │     │
-│  └────────────┘    └─────────────────┘    └──────────────┘     │
-│                           │                       │             │
-│                    ┌──────┴──────┐          ┌─────┴─────┐       │
-│                    ▼             ▼          ▼           │       │
-│              SQL Server     Chart Tools   FAISS Index   │       │
-│             (TickTraq)      (Recharts)   (Vector DB)    │       │
-│                                                 │       │       │
-│                                          OpenRouter     │       │
-│                                         (Embeddings)    │       │
-└─────────────────────────────────────────────────────────────────┘
+TickTraq Webapp (.NET/Angular)
+        │
+        │  POST /run_sse (SSE Stream)
+        ▼
+┌─────────────────────────────────────────────────────┐
+│  FastAPI Server (port 8080)                         │
+│  - Filter injection (project/team/region tags)      │
+│  - Session state management (username, role)        │
+│  - SSE streaming with status updates                │
+│  - Markdown→HTML conversion, filter tag cleanup     │
+│  - Chat persistence (ChatbotMessages DB)            │
+└─────────────────────────────────────────────────────┘
+        │
+        │  ADK Runner
+        ▼
+┌─────────────────────────────────────────────────────┐
+│  root_agent (Coordinator/Dispatcher)                │
+│  Pattern: LLM-driven delegation via transfer        │
+│  Model: gemini-2.5-flash                            │
+│                                                     │
+│  ┌─────────┐  ┌──────────────────┐  ┌───────────┐  │
+│  │ greeter │  │ ticket_analytics │  │ oip_expert│  │
+│  │ (no     │  │ (10 tools)       │  │ (1 tool)  │  │
+│  │  tools) │  │ ReAct reasoning  │  │ CoT + RAG │  │
+│  └─────────┘  └──────────────────┘  └───────────┘  │
+│                    │          │           │          │
+│              SQL Server  Chart Engine  FAISS Index   │
+│              (TickTraq)  (Recharts)   (Vector DB)   │
+└─────────────────────────────────────────────────────┘
 ```
+
+### Design Pattern Used: Coordinator/Dispatcher
+This project follows the **Coordinator/Dispatcher** multi-agent pattern from Google ADK. The root agent is an LLM agent that analyzes user intent and delegates to specialist sub-agents via `transfer_to_agent()`. Sub-agent `description` fields are critical — the coordinator LLM uses them to make routing decisions.
 
 ## Agent Architecture
 
@@ -145,21 +142,30 @@ root_agent (oip_assistant)
 **Name**: `ticket_analytics`
 **File**: `my_agent/agents/ticket_analytics.py`
 **Purpose**: Ticket queries, workload analysis, SLA tracking, visualizations
-**Tools** (8 total):
-- `get_ticket_summary()` - Fetch ticket statistics from SQL Server
+**Tools** (10 total):
+
+**Database Tools:**
+- `get_ticket_summary()` - Fetch ticket statistics from SQL Server (role-based filtering)
 - `get_current_date()` - Get date context for time-based queries
-- `create_chart_from_session()` - Create charts from session data (preferred for "chart the above")
+- `get_lookups()` - Reference data (projects, teams, regions, statuses)
+
+**Session-Aware Chart Tools:**
+- `create_chart_from_session()` - Flexible metric selection from session data (preferred for "chart the above")
+- `create_breakdown_chart()` - Simplified breakdown by project/region/team
+
+**Direct Chart Tools:**
 - `create_chart()` - General purpose chart (auto-selects type)
 - `create_ticket_status_chart()` - Pie chart of ticket statuses
 - `create_completion_rate_gauge()` - Gauge chart for completion rate
 - `create_tickets_over_time_chart()` - Line chart trends
 - `create_project_comparison_chart()` - Bar chart comparison
 
-**Features**:
-- ReAct-style reasoning (THOUGHT → ACTION → OBSERVATION → RESPONSE)
-- Session state for "chart the above" queries
+**Reasoning Pattern**: ReAct (THOUGHT → ACTION → OBSERVATION → RESPONSE)
+**Key Features**:
+- Session state for "chart the above" queries (avoids re-querying DB)
 - Natural language time expressions (this month, last week, Q4 2025)
 - Dynamic date context (current month, last month auto-calculated)
+- Derived metrics: within_sla, non_suspended, remaining, completion_rate
 
 ### Unused Agent (Not Integrated)
 **Name**: `data_visualization`
@@ -223,50 +229,13 @@ All chart tools return HTML strings with embedded Recharts JSON configuration fo
 }
 ```
 
-## Frontend Architecture
+## Frontend (External — TickTraq Webapp)
 
-**Stack**: Next.js 16, React 19, TypeScript, Tailwind CSS, Recharts, Radix UI
-
-### Directory Structure
-```
-frontend/src/
-├── app/
-│   ├── page.tsx           # Home page with hero + chat widget
-│   ├── login/page.tsx     # Login form
-│   ├── chat/page.tsx      # Full-page chat interface
-│   └── layout.tsx         # Root layout with UserProvider
-├── components/
-│   ├── chatbot/
-│   │   ├── ChatFullScreen.tsx   # Main chat UI
-│   │   ├── ChatSidebar.tsx      # Session history
-│   │   ├── ChatMessage.tsx      # Message renderer (HTML + charts)
-│   │   ├── ChatInput.tsx        # Input bar
-│   │   ├── DynamicChart.tsx     # Recharts renderer
-│   │   └── TypingIndicator.tsx
-│   └── ui/                # Shadcn UI components
-├── contexts/
-│   └── UserContext.tsx    # User login state
-├── hooks/
-│   ├── useChat.ts         # Message & streaming management
-│   └── useChatHistory.ts  # Persistent chat history
-├── lib/
-│   ├── api.ts             # API client (REST + SSE)
-│   └── constants.ts       # User database
-└── config/
-    └── api.config.ts      # API base URL, defaults
-```
-
-### Key Frontend Hooks
-
-**useChat** - Main chat logic
-```typescript
-const { messages, isLoading, loadingStatus, error, sessionId, sendMessage, clearMessages, newChat, loadSession } = useChat()
-```
-
-**useChatHistory** - Session persistence
-```typescript
-const { saveSession, getSession, deleteSession, sessions } = useChatHistory()
-```
+The frontend is embedded in the **TickTraq .NET/Angular webapp** (separate repository). The `frontend/` directory in this repo is legacy and no longer used. The TickTraq frontend:
+- Calls `POST /run_sse` for streaming chat
+- Parses `<!--CHART_START-->` / `<!--CHART_END-->` delimiters for chart rendering
+- Sends filter selections (project, team, region) in the request body
+- Renders HTML responses directly (agents output HTML, not markdown)
 
 ## Database Integration
 
@@ -288,22 +257,36 @@ EXEC usp_Chatbot_GetTicketSummary
 
 ## Session State Management
 
-**ADK Session State** (backend):
+**ADK Session State** (set in `main.py`, used by tools):
 ```python
 {
-    "username": str,
-    "userRole": str,
-    "userRoleCode": str,
-    "projectCode": str,         # comma-separated
-    "team": str,                # comma-separated
-    "last_ticket_data": dict,   # for "chart the above"
-    "last_query_type": str
+    # Identity (persisted, required for DB queries)
+    "username": str,              # Injected from request, used by get_ticket_summary()
+    "userRole": str,              # For role-based logic (Engineer/Supervisor/Admin)
+    "userRoleCode": str,          # Legacy/API compatibility
+    "user:username": str,         # Persists across sessions (ADK user: prefix)
+
+    # Filter context (deprecated — superseded by message tag injection)
+    "projectCode": str,           # No longer used for filtering
+    "team": str,                  # No longer used for filtering
+    "region": str,                # No longer used for filtering
+
+    # Tool state (ephemeral, set by tools during conversation)
+    "last_ticket_data": dict,     # Stored by get_ticket_summary() for "chart the above"
+    "last_query_context": str,    # Query context for follow-up requests
 }
 ```
 
-**Frontend Storage**:
-- `localStorage`: User context, chat history
-- URL params: Session ID (`/chat?session=<uuid>`)
+**Filter Injection Pattern** (replaces session state for filters):
+```
+Frontend sends: projectFilter="ANB,Barclays", teamFilter="Maintenance"
+    ↓
+main.py injects into message: "[ACTIVE_PROJECT_FILTER: ANB,Barclays]\n[ACTIVE_TEAM_FILTER: Maintenance]"
+    ↓
+Agent reads tags → passes to tool parameters
+    ↓
+main.py strips tags from response before returning to frontend
+```
 
 ## Response Formatting
 
@@ -386,23 +369,203 @@ DB_PASSWORD=...            # Optional if using Windows auth
 1. Add PDF/DOCX files to `docs/` folder
 2. Re-run: `python scripts/ingest_documents.py`
 
+## ADK Agent Design Best Practices
+
+> Based on Google ADK official documentation, "Building Agents" course material, and project experience.
+
+### Agent Design Principles
+
+1. **Single Responsibility**: Each agent has ONE well-defined purpose. Don't combine unrelated capabilities.
+   - `greeter` = greetings only
+   - `oip_expert` = documentation Q&A only
+   - `ticket_analytics` = ticket data + visualizations
+
+2. **Clear Description Fields**: Sub-agent `description` is the most important field for routing. The coordinator LLM reads descriptions to decide delegation. Write them as clear API docs.
+   ```python
+   Agent(
+       name="ticket_analytics",
+       description="Handles ticket queries, workload analysis, SLA tracking, "
+                   "and chart visualizations. Use for any question about tickets, "
+                   "team performance, project status, or data visualization."
+   )
+   ```
+
+3. **Coordinator Should Not Have Tools**: The root agent should only route — not execute. Keep tools on specialist sub-agents. This prevents the coordinator from trying to answer questions itself.
+
+4. **Prefer LLM-Driven Delegation**: Use ADK's `transfer_to_agent()` pattern (AutoFlow) where the LLM decides routing, rather than hardcoded if/else logic. This handles edge cases and ambiguous queries better.
+
+### Tool Design Rules
+
+1. **Return Dictionaries with Status Keys**: Every tool must return `{"status": "success"|"error", ...}`. This gives the LLM clear signals for error handling.
+   ```python
+   def my_tool(query: str) -> dict:
+       try:
+           result = do_work(query)
+           return {"status": "success", "data": result}
+       except Exception as e:
+           return {"status": "error", "error_message": str(e)}
+   ```
+
+2. **Docstrings Are Critical**: The function docstring IS the tool description sent to the LLM. Write comprehensive docstrings explaining purpose, parameters, and return values. The LLM uses this to decide WHEN and HOW to call the tool.
+
+3. **Never Document `tool_context` in Docstrings**: ADK injects `ToolContext` automatically. Including it in docstrings confuses the LLM into thinking it needs to provide it.
+   ```python
+   # CORRECT
+   def get_ticket_summary(project_names: str = None, tool_context: ToolContext = None) -> dict:
+       """Fetch ticket statistics from the database.
+
+       Args:
+           project_names: Comma-separated project names (e.g., "ANB,Barclays")
+       """
+
+   # WRONG - don't document tool_context
+   def get_ticket_summary(project_names: str = None, tool_context: ToolContext = None) -> dict:
+       """Args:
+           tool_context: ADK session state object  <-- DON'T DO THIS
+       """
+   ```
+
+4. **Minimize Parameters**: Fewer parameters = fewer chances for the LLM to make errors. Use simple types (str, int, bool). Avoid `*args`, `**kwargs` (ADK ignores them).
+
+5. **Tools Do Computation, Not LLMs**: Put calculations, derived metrics, and data transformations in tool code. Don't ask the LLM to calculate percentages or aggregates — it will get them wrong.
+   ```python
+   # CORRECT - tool calculates derived metric
+   result["within_sla"] = result["total"] - result["breached"]
+
+   # WRONG - asking LLM to calculate in prompt
+   # "Calculate within_sla by subtracting breached from total"
+   ```
+
+### Session State Best Practices
+
+1. **State Prefix Convention** (ADK standard):
+   | Prefix | Scope | Use Case |
+   |--------|-------|----------|
+   | (none) | Current session | `last_ticket_data`, `last_query_type` |
+   | `user:` | Persists across sessions | `user:username`, `user:preferences` |
+   | `app:` | Global, all users | `app:system_config` |
+   | `temp:` | Current invocation only | `temp:intermediate_calc` |
+
+2. **Never Modify `session.state` Directly**: Always update state through `ToolContext.state` or `EventActions.state_delta`. Direct modification bypasses event tracking and breaks persistence.
+
+3. **Filter Injection > Session State for Request-Scoped Data**: This project injects filter context (project, team, region) directly into the message text via `[ACTIVE_*_FILTER]` tags rather than relying on session state. This avoids ADK session state timing issues where state updates from one turn aren't visible in the same turn.
+
+### Prompt Engineering Patterns
+
+1. **ReAct for Complex Tools** (used by `ticket_analytics`):
+   ```
+   THOUGHT: Analyze what the user is asking
+   ACTION: Call the appropriate tool with correct parameters
+   OBSERVATION: Process the tool's response
+   RESPONSE: Generate formatted HTML answer
+   ```
+
+2. **Chain-of-Thought for RAG** (used by `oip_expert`):
+   ```
+   UNDERSTAND → RETRIEVE → VALIDATE → SYNTHESIZE → FORMAT
+   ```
+
+3. **Structured Instruction Template**:
+   - **Role/Persona**: Who the agent is
+   - **Capabilities**: What tools are available and when to use each
+   - **Routing Rules**: When to delegate (for coordinators)
+   - **Output Format**: HTML structure, color codes, response patterns
+   - **Constraints/Guardrails**: What NOT to do (never expose DB columns, etc.)
+   - **Examples**: Concrete input/output pairs for common scenarios
+
+4. **Dynamic State Injection**: Use `{state_key}` placeholders in instructions to inject session state at runtime:
+   ```python
+   instruction="You are helping {username} who has the role {userRole}."
+   ```
+
+5. **Guardrails in Every Agent Prompt**:
+   - Never expose internal terms (ACTIVE_*_FILTER, DB columns, stored procedure names)
+   - Never hallucinate data — only use tool results
+   - Always use HTML output (never markdown)
+   - Color-code status values consistently
+
+### Anti-Patterns to Avoid
+
+| Anti-Pattern | Why It's Bad | Do Instead |
+|-------------|-------------|------------|
+| Monolithic agent with many tools | LLM gets confused choosing between 20+ tools | Split into focused sub-agents |
+| Hardcoded routing logic | Brittle, can't handle edge cases | Use LLM-driven delegation |
+| LLM doing math/aggregation | LLMs make arithmetic errors | Put calculations in tool code |
+| Overly long prompts (500+ lines) | Dilutes important instructions | Break into sections, use examples sparingly |
+| Exposing raw DB errors to users | Confusing UX, security risk | Catch errors, return friendly messages |
+| Storing request-scoped data in session | Timing issues with ADK state | Use filter injection in message text |
+| Synchronous tools with I/O | Blocks parallel tool execution | Use `async def` for I/O-bound tools |
+| Generic tool names (`do_stuff()`) | LLM can't figure out when to use it | Descriptive names: `get_ticket_summary()` |
+
+### Chart Output Contract
+
+All chart tools return this format for frontend parsing:
+```
+<!--CHART_START-->
+{
+  "type": "bar|pie|line|gauge|donut|area",
+  "data": [...],
+  "config": {...}
+}
+<!--CHART_END-->
+<p>Text summary with insights</p>
+```
+
+**Intelligent Chart Type Selection**:
+- Time-series data → LINE/AREA
+- Proportions/distribution → PIE/DONUT
+- Comparisons → BAR
+- Single metric percentage → GAUGE
+
+**Color Palette** (consistent across all charts):
+| Status | Color | Hex |
+|--------|-------|-----|
+| Open/In Progress | Blue | `#3b82f6` |
+| Completed/Success | Green | `#22c55e` |
+| Suspended/Warning | Orange | `#f59e0b` |
+| Pending Approval | Purple | `#8b5cf6` |
+| SLA Breached/Error | Red | `#ef4444` |
+
+### Testing Agents
+
+```bash
+# Quick smoke test — verify agent imports
+python -c "from my_agent import root_agent; print(root_agent)"
+
+# Interactive testing via ADK web UI
+adk web my_agent
+
+# Test specific tool
+python -c "from my_agent.tools.db_tools import get_ticket_summary; print(get_ticket_summary.__doc__)"
+
+# Run the full server
+python main.py
+```
+
+For regression testing, consider ADK's `.test.json` format:
+```json
+{
+  "name": "ticket_query_test",
+  "turns": [
+    {
+      "query": "How many open tickets do I have?",
+      "expected_tool_use": ["get_ticket_summary"],
+      "reference": "HTML response with ticket counts"
+    }
+  ]
+}
+```
+
 ## Dependencies
 
 **Backend (Python)**:
-- google-adk (Agent orchestration)
-- fastapi, uvicorn (REST API)
-- faiss-cpu (Vector search)
-- pyodbc (SQL Server)
-- PyMuPDF, python-docx (Document parsing)
-- pydantic (Data validation)
-- litellm (OpenRouter integration)
-
-**Frontend (JavaScript/TypeScript)**:
-- next, react, react-dom
-- typescript, tailwindcss
-- recharts (Visualizations)
-- lucide-react (Icons)
-- @radix-ui/* (UI primitives)
+- `google-adk` — Agent orchestration (core framework)
+- `fastapi`, `uvicorn` — REST API + SSE streaming
+- `faiss-cpu` — Vector similarity search
+- `pyodbc` — SQL Server connectivity (ODBC Driver 17)
+- `PyMuPDF`, `python-docx` — Document parsing for RAG ingestion
+- `pydantic` — Data validation and models
+- `litellm` — OpenRouter integration for embeddings + fallback LLMs
 
 ## Data Flow Examples
 

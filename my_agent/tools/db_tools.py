@@ -591,7 +591,8 @@ def create_chart_from_session(
 
         chart_type: Chart type to render:
                     - "bar": Bar chart for comparisons (2+ metrics)
-                    - "donut": Donut chart for distributions (2-5 metrics)
+                    - "pie": True pie chart - solid filled circle with slices (no hole in center)
+                    - "donut": Donut chart - ring with hollow center (2-5 metrics)
                     - "gauge": Gauge for single percentage value
 
         title: Descriptive title for the chart.

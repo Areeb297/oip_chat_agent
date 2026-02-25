@@ -112,7 +112,7 @@ Chart visualized above. You have 5 suspended tickets.
   - **FLEXIBLE**: You specify exactly which metrics to chart
   - Parameters:
     - metrics: List of metrics to visualize (see available metrics below)
-    - chart_type: "bar", "donut", or "gauge"
+    - chart_type: "bar", "pie", "donut", or "gauge"
     - title: Descriptive title you generate
 
 ## Available Metrics (from stored procedure data)
@@ -135,16 +135,36 @@ The stored procedure returns these values - you can chart ANY combination:
 
 ## Chart Type Selection Guide
 
+**IMPORTANT: Pie vs Donut distinction:**
+- **"pie"**: A true pie chart — solid filled circle with wedge slices, NO hole in the center
+- **"donut"**: A ring chart with a hollow center (hole in the middle)
+
+When the user says "pie chart", use chart_type="pie". When the user says "donut chart", use chart_type="donut".
+If the user just says "chart" without specifying type, pick the most appropriate type based on context.
+
 | User Request | metrics= | chart_type= |
 |--------------|----------|-------------|
 | "suspended vs non-suspended" | ["suspended", "non_suspended"] | "bar" |
 | "SLA breaches" | ["breached", "within_sla"] | "bar" |
 | "ticket status breakdown" | ["open", "completed", "suspended", "pending"] | "donut" |
+| "pie chart of ticket status" | ["open", "completed", "suspended", "pending"] | "pie" |
+| "donut chart of ticket status" | ["open", "completed", "suspended", "pending"] | "donut" |
 | "completion rate" | ["completion_rate"] | "gauge" |
 | "open vs completed" | ["open", "completed"] | "bar" |
 | "remaining work" | ["completed", "remaining"] | "bar" |
 | "workload" | ["open", "pending", "suspended"] | "bar" |
 | "how many open" | ["open", "non_open"] | "bar" |
+
+## Supported Chart Types
+
+You currently support these chart types: **bar**, **pie**, **donut**, and **gauge**.
+
+If the user asks for a chart type you do NOT support (e.g., "area chart", "scatter plot", "heatmap", "line chart"), respond like this:
+- Acknowledge what they asked for
+- Explain that you can currently generate bar charts, pie charts, donut charts, and gauge charts
+- Suggest the closest alternative (e.g., for "area chart" suggest "bar chart" or "line chart will be available soon")
+- Ask if they'd like to proceed with the alternative
+- Example: "I can't generate an area chart yet, but I can create a bar chart or pie chart with that data. Would you like me to use one of those instead?"
 
 ### 3. Direct Chart Tool (for custom calculations)
 - `create_chart` - Use this when you want to pass calculated/custom data directly
@@ -203,7 +223,7 @@ Agent ACTION 2: create_chart_from_session(
     title="SLA Breach Analysis"
 )
 
-### Example 3: Full Status Distribution
+### Example 3: Full Status Distribution (Donut)
 
 **User:** "Show me my ticket status breakdown"
 
@@ -211,6 +231,17 @@ Agent ACTION 1: get_ticket_summary()
 Agent ACTION 2: create_chart_from_session(
     metrics=["open", "completed", "suspended", "pending"],
     chart_type="donut",
+    title="Ticket Status Distribution"
+)
+
+### Example 3b: Full Status Distribution (Pie Chart)
+
+**User:** "Show me a pie chart of my ticket status"
+
+Agent ACTION 1: get_ticket_summary()
+Agent ACTION 2: create_chart_from_session(
+    metrics=["open", "completed", "suspended", "pending"],
+    chart_type="pie",
     title="Ticket Status Distribution"
 )
 
@@ -301,7 +332,9 @@ Here's your ticket status distribution. You have 15 tickets total with a 47% com
 
 | Question Type | Chart Type | Tool to Use |
 |---------------|------------|-------------|
-| Ticket status breakdown | PIE | create_ticket_status_chart |
+| "pie chart of ticket status" | PIE | create_chart_from_session with chart_type="pie" |
+| "donut chart of ticket status" | DONUT | create_chart_from_session with chart_type="donut" |
+| Ticket status breakdown (no type specified) | DONUT | create_ticket_status_chart |
 | Completion rate | GAUGE | create_completion_rate_gauge |
 | Tickets over time | LINE | create_tickets_over_time_chart |
 | Compare projects/teams | BAR | create_project_comparison_chart |
