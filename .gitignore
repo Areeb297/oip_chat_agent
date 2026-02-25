@@ -85,8 +85,11 @@ node_modules/
 # OIP TicketTraq Database
 /OIP_Database
 
-# Docs (architecture notes - not for repo)
-docs/architecture.md
+# Docs (internal planning - not for repo)
+docs/*.md
+
+# SQL scripts (stored procedures - run manually in SSMS)
+scripts/sql/
 
 # Course/Reference materials
 Agentic Workflows - I.txt

@@ -35,6 +35,18 @@ This is the **Ebttikar OIP Assistant** - a multi-agent chatbot for the Operation
 
 **Architecture diagrams**: See [`docs/architecture.md`](docs/architecture.md) for full Mermaid diagrams covering agent hierarchy, request flow, tool ecosystem, session state, and data pipelines.
 
+## Saudi Data Compliance (Future Production)
+
+This solution is hosted on Ebttikar data center servers in Saudi Arabia. For production deployment in the Saudi market, all LLM and embedding calls must stay within KSA borders per **SADAIA PDPL** (Personal Data Protection Law).
+
+**Planned migration path** (see `docs/production-llm-saudi.md` for full details):
+- **Agent LLM**: Gemini 2.5 Flash → Vertex AI (Dammam region me-central2) via CNTXT
+- **Helper LLM**: GPT-4o-mini → Gemini 2.5 Flash-Lite on Vertex AI (Dammam)
+- **Embeddings**: OpenAI ada-002 → Self-hosted BGE-M3 or Vertex AI Embeddings
+- **No OpenAI/OpenRouter calls** in production — all data stays in KSA
+
+When making changes to model calls or adding new LLM integrations, keep this migration in mind. Avoid deep coupling to OpenRouter-specific features.
+
 ## Common Commands
 
 ```bash

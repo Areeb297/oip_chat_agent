@@ -10,7 +10,7 @@ from datetime import datetime
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
-from ..tools.db_tools import get_ticket_summary, get_current_date, create_chart_from_session, get_lookups
+from ..tools.db_tools import get_ticket_summary, get_ticket_timeline, get_current_date, create_chart_from_session, get_lookups
 from ..tools.chart_tools import (
     create_chart,
     create_ticket_status_chart,
@@ -106,6 +106,18 @@ Chart visualized above. You have 5 suspended tickets.
     - `"Teams"` (capital T, plural) - NOT "team" or "Team"
     - `"Statuses"` (capital S, plural) - NOT "status" or "Status"
     - `"All"` (capital A) - Get everything
+- `get_ticket_timeline` - Returns ticket creation/completion counts grouped by time period
+  - Use for: "show ticket trend", "tickets created over time", "weekly/monthly ticket chart"
+  - Parameters: period ("week"/"month"/"quarter"/"year"), project_names, team_names, region_names, date_from, date_to
+  - Returns: List of {{Period, TicketsCreated, TicketsCompleted}} — compact aggregated data
+  - After calling this, use `create_tickets_over_time_chart` to visualize — it reads data from session automatically
+  - Example flow:
+    1. Call get_ticket_timeline(period="month") -> data stored in session
+    2. Call create_tickets_over_time_chart(title="Monthly Ticket Trend") -> reads session data, creates chart
+  - Do NOT pass data to create_tickets_over_time_chart — it reads from session state automatically
+  - Chart type is auto-selected: **area chart** for created-vs-completed (shows backlog gap visually), line chart for single series
+  - The agent can override with chart_type="line" or chart_type="area" if the user requests a specific style
+  - Note: Data is capped at 500 tickets for performance. If user needs more specific data, suggest narrowing the date range.
 
 ### 2. Session-Aware Chart Tool (FLEXIBLE for ANY visualization)
 - `create_chart_from_session` - Creates a chart using data stored in session
@@ -599,6 +611,7 @@ Use this agent for questions like:
     tools=[
         # Database tools
         get_ticket_summary,
+        get_ticket_timeline,
         get_current_date,
         get_lookups,
         # Session-aware chart tools (PREFERRED - use breakdown data from session)

@@ -497,6 +497,151 @@ def get_ticket_summary(
         }
 
 
+def get_ticket_timeline(
+    period: str = "month",
+    project_names: Optional[str] = None,
+    team_names: Optional[str] = None,
+    region_names: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    tool_context: "ToolContext" = None,
+) -> dict:
+    """
+    Get ticket creation and completion counts grouped by time period.
+
+    Returns aggregated timeline data suitable for line or area charts.
+    Use this when users ask about ticket trends over time, creation rates,
+    or want to see how tickets were created/completed over weeks or months.
+
+    After calling this tool, use create_tickets_over_time_chart() to visualize
+    the returned data as a line or area chart.
+
+    Args:
+        period: Time grouping period. One of:
+                - "week" — group by week (good for last 1-3 months)
+                - "month" — group by month (default, good for 3-12 months)
+                - "quarter" — group by quarter (good for 1-2 years)
+                - "year" — group by year (good for multi-year overview)
+        project_names: Filter by project name(s). Comma-separated for multiple.
+        team_names: Filter by team name(s). Comma-separated for multiple.
+        region_names: Filter by region name(s). Comma-separated for multiple.
+        date_from: Start date in YYYY-MM-DD format. Defaults to last 12 months.
+        date_to: End date in YYYY-MM-DD format. Defaults to today.
+
+    Returns:
+        dict: Timeline data containing:
+            - timeline: List of {Period, TicketsCreated, TicketsCompleted}
+            - period_type: The grouping used (week/month/quarter/year)
+            - date_range: Applied date range
+            - filters: Applied filters
+            - Message: "Success" or error description
+
+    Example queries:
+        - "Show ticket creation trend" -> get_ticket_timeline()
+        - "Weekly ticket trend for ANB" -> get_ticket_timeline(period="week", project_names="Arab National Bank")
+        - "How many tickets were created last 3 months?" -> get_ticket_timeline(date_from="2025-12-01")
+        - "Yearly ticket overview" -> get_ticket_timeline(period="year")
+        - "Ticket trend for Maintenance team" -> get_ticket_timeline(team_names="Maintenance")
+    """
+    try:
+        logger.info("📈 Fetching ticket timeline...")
+        print(f"🔍 [TIMELINE] period={period}, projects={project_names}, teams={team_names}, regions={region_names}, from={date_from}, to={date_to}")
+
+        # Get username from session state
+        username = None
+        if tool_context is not None:
+            username = tool_context.state.get("username")
+
+        if not username:
+            return {"timeline": [], "Message": "Error: Username not found in session. Please ensure you are logged in."}
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Build parameter list
+        params = [username]
+        param_markers = ['@Username=?']
+
+        if project_names:
+            params.append(project_names)
+            param_markers.append('@ProjectNames=?')
+
+        if team_names:
+            params.append(team_names)
+            param_markers.append('@TeamNames=?')
+
+        if region_names:
+            params.append(region_names)
+            param_markers.append('@RegionNames=?')
+
+        if period:
+            params.append(period)
+            param_markers.append('@Period=?')
+
+        if date_from:
+            params.append(date_from)
+            param_markers.append('@DateFrom=?')
+
+        if date_to:
+            params.append(date_to)
+            param_markers.append('@DateTo=?')
+
+        sql = f"EXEC usp_Chatbot_GetTicketTimeline {', '.join(param_markers)}"
+        logger.info("🔄 Querying ticket timeline...")
+        cursor.execute(sql, params)
+
+        rows = cursor.fetchall()
+        timeline = []
+
+        if rows and cursor.description:
+            columns = [col[0] for col in cursor.description]
+            for row in rows:
+                row_dict = dict(zip(columns, row))
+                # Ensure numeric values are proper types
+                for key in row_dict:
+                    val = row_dict[key]
+                    if val is not None and isinstance(val, (int, float)):
+                        row_dict[key] = int(val) if isinstance(val, int) or (isinstance(val, float) and val.is_integer()) else float(val)
+                    elif val is not None and hasattr(val, 'as_tuple'):
+                        row_dict[key] = float(val)
+                timeline.append(row_dict)
+
+        cursor.close()
+        conn.close()
+
+        print(f"📈 [TIMELINE] Got {len(timeline)} periods")
+
+        result = {
+            "timeline": timeline,
+            "period_type": period,
+            "date_range": f"{date_from or 'last 12 months'} to {date_to or 'today'}",
+            "filters": {
+                "projects": project_names or "All",
+                "teams": team_names or "All",
+                "regions": region_names or "All",
+            },
+            "Message": "Success" if timeline else "No timeline data found for the given filters.",
+        }
+
+        # Store in session for follow-up chart requests
+        if tool_context is not None:
+            tool_context.state["last_ticket_data"] = result
+            tool_context.state["last_query_type"] = "ticket_timeline"
+
+        return result
+
+    except pyodbc.Error as db_error:
+        print(f"❌ [DB ERROR] {db_error}")
+        import traceback
+        traceback.print_exc()
+        return {"timeline": [], "Message": f"Database error: {str(db_error)}"}
+    except Exception as e:
+        print(f"❌ [ERROR] {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"timeline": [], "Message": f"Error: {type(e).__name__}: {str(e)}"}
+
+
 def calculate_date_range(period: str) -> tuple[Optional[str], Optional[str]]:
     """
     Calculate date range from natural language period.

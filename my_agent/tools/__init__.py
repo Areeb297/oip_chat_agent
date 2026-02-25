@@ -1,6 +1,6 @@
 """Agent tools - RAG search, database queries, chart visualization, etc."""
 from .rag_tool import search_oip_documents
-from .db_tools import get_ticket_summary, get_current_date, create_chart_from_session, get_lookups
+from .db_tools import get_ticket_summary, get_current_date, create_chart_from_session, get_lookups, get_ticket_timeline
 from .chart_tools import (
     create_chart,
     create_ticket_status_chart,
@@ -15,6 +15,7 @@ __all__ = [
     "search_oip_documents",
     # Database tools
     "get_ticket_summary",
+    "get_ticket_timeline",
     "get_current_date",
     "get_lookups",
     # Session-aware chart tools (uses stored data)

@@ -18,6 +18,7 @@ this and render using Recharts.
 from typing import Optional, List, Dict, Any
 from enum import Enum
 import json
+import re
 
 
 class ChartType(Enum):
@@ -53,6 +54,21 @@ STATUS_COLORS = {
     "breached": "#ef4444",    # Red
     "total": "#3b82f6",       # Blue
 }
+
+
+def _humanize_key(key: str) -> str:
+    """Convert a CamelCase or snake_case key to a human-readable label.
+
+    Examples:
+        TicketsCreated  -> Tickets Created
+        SLABreached     -> SLA Breached
+        open_tickets    -> Open Tickets
+        CompletionRate  -> Completion Rate
+    """
+    s = re.sub(r'([a-z])([A-Z])', r'\1 \2', key)
+    s = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1 \2', s)
+    s = s.replace('_', ' ')
+    return ' '.join(w if w.isupper() else w.capitalize() for w in s.split())
 
 
 def analyze_data_for_chart_type(
@@ -310,7 +326,7 @@ def create_chart(
     # Build series configuration
     series = []
     for i, key in enumerate(y_keys):
-        label = y_labels[i] if y_labels and i < len(y_labels) else key.replace("_", " ").title()
+        label = y_labels[i] if y_labels and i < len(y_labels) else _humanize_key(key)
         series.append({
             "key": key,
             "label": label,
@@ -373,6 +389,8 @@ def create_chart(
 
     # Generate the output with chart JSON and text summary
     chart_json = json.dumps(config, indent=2)
+    print(f"📊 [CHART CONFIG] type={chart_type}, series={[s['key'] for s in series]}, data_points={len(data)}")
+    print(f"📊 [CHART JSON preview] {chart_json[:500]}")
 
     # Build insights HTML
     insights_html = ""
@@ -535,56 +553,67 @@ def create_completion_rate_gauge(
 
 
 def create_tickets_over_time_chart(
-    data: List[Dict[str, Any]],
-    time_key: str = "month",
-    value_keys: List[str] = None,
-    title: str = "Ticket Trend"
+    chart_type: str = "auto",
+    title: str = "Ticket Trend",
+    tool_context=None,
 ) -> str:
     """
-    Create a line chart showing tickets over time.
+    Create a line or area chart showing tickets created vs completed over time.
 
-    Specialized helper for time-series ticket visualizations.
-    Automatically uses line chart for trend analysis.
+    Reads timeline data automatically from session state (stored by get_ticket_timeline).
+    Do NOT pass data directly — just call this after get_ticket_timeline().
+
+    By default auto-selects chart type:
+      - "area" when showing created vs completed (highlights backlog gap)
+      - "line" for single series
 
     Args:
-        data: List of time-series data points
-              e.g., [{"month": "Jan", "total": 15, "completed": 10}, ...]
-        time_key: Key for the time axis (default: "month")
-        value_keys: Keys for values to plot (default: auto-detect numeric keys)
+        chart_type: "auto" (default), "line", or "area"
         title: Chart title (default: "Ticket Trend")
 
     Returns:
-        str: Line chart configuration with HTML wrapper
+        str: Line or area chart configuration with HTML wrapper
 
-    Example:
-        create_tickets_over_time_chart(
-            data=[
-                {"month": "Jan", "total": 15, "completed": 10},
-                {"month": "Feb", "total": 18, "completed": 14}
-            ],
-            time_key="month",
-            value_keys=["total", "completed"]
-        )
+    Example flow:
+        1. Call get_ticket_timeline(period="month")
+        2. Call create_tickets_over_time_chart(title="Monthly Ticket Trend")
     """
-    if not data:
-        return "<p>No data available to chart.</p>"
+    # Read timeline data from session state (stored by get_ticket_timeline)
+    data = None
+    if tool_context is not None:
+        last_data = tool_context.state.get("last_ticket_data")
+        if last_data and isinstance(last_data, dict):
+            data = last_data.get("timeline", [])
 
-    # Auto-detect numeric keys if not provided
-    if value_keys is None:
-        first_item = data[0]
-        value_keys = [k for k, v in first_item.items()
-                      if isinstance(v, (int, float)) and k != time_key]
+    if not data:
+        return "<p>No timeline data in session. Please call get_ticket_timeline() first.</p>"
+
+    # Timeline data uses "Period" as the time key
+    time_key = "Period"
+
+    # Auto-detect numeric keys
+    first_item = data[0]
+    value_keys = [k for k, v in first_item.items()
+                  if isinstance(v, (int, float)) and k != time_key]
 
     if not value_keys:
         return "<p>No numeric data found to visualize.</p>"
+
+    # Auto-select chart type: area for 2-series comparisons (shows backlog gap), line otherwise
+    if chart_type == "auto":
+        chart_type = "area" if len(value_keys) == 2 else "line"
+
+    print(f"📊 [TIMELINE CHART] type={chart_type}, keys={value_keys}, points={len(data)}, data[0]={data[0]}")
 
     return create_chart(
         data=data,
         title=title,
         x_key=time_key,
         y_keys=value_keys,
-        chart_type="line",
-        description=f"Trend of {', '.join(value_keys)} over time"
+        chart_type=chart_type,
+        description="Trend of {} over time".format(
+            ", ".join(_humanize_key(k) for k in value_keys)
+        )
     )
 
 
@@ -654,7 +683,9 @@ def create_project_comparison_chart(
         x_key=project_key,
         y_keys=value_keys,
         chart_type=chart_type,
-        description=f"Comparison of {', '.join(value_keys)} across projects",
+        description="Comparison of {} across projects".format(
+            ", ".join(_humanize_key(k) for k in value_keys)
+        ),
         colors=colors
     )
 
