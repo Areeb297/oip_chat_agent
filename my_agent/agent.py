@@ -17,6 +17,8 @@ from google.adk.models.lite_llm import LiteLlm
 from .prompts.templates import Prompts
 from .tools.rag_tool import search_oip_documents
 from .agents.ticket_analytics import ticket_analytics
+from .agents.engineer_analytics import engineer_analytics
+from .agents.inventory_analytics import inventory_analytics
 
 
 # =============================================================================
@@ -101,6 +103,7 @@ Route user requests to the appropriate agent:
    - Time-based queries (this month, last week, in December)
    - Completion rates and statistics
    - Charts, graphs, visualizations of ticket data
+   - PM checklist data (Panel IPs, equipment, site visits)
 
    The ticket_analytics agent can both fetch data AND create visualizations (Recharts).
 
@@ -111,16 +114,43 @@ Route user requests to the appropriate agent:
    - Platform documentation and technical specifications
    - How OIP works, modules, integrations
 
-4. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
+4. **Engineer Performance/Productivity** -> engineer_analytics
+   Use this for questions about:
+   - Tickets completed by specific engineers ("by Areeb", "by Mohammed")
+   - Engineer performance, completion rates per engineer
+   - Activity type distributions (TR/PM/Other per engineer)
+   - Certification expiry and compliance
+   - "Are all engineers certified?"
+   - "Which certifications are expiring?"
+   - "Engineer productivity this month"
+   - Charts of engineer performance data
+
+5. **Spare Parts / Inventory** -> inventory_analytics
+   Use this for questions about:
+   - Spare parts consumed in a period
+   - Sites where specific parts were used
+   - Consumption lists for invoicing
+   - Part usage reports by project
+   - "How many spare parts consumed?"
+   - "Which parts consumed most?"
+   - Inventory charts and reports
+
+6. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
+
+ROUTING DISAMBIGUATION:
+- "my tickets" or "ticket summary" -> ticket_analytics (user's own tickets)
+- "tickets completed by Areeb" or "engineer performance" -> engineer_analytics (per-engineer breakdown)
+- "spare parts" or "inventory" or "consumption" -> inventory_analytics
+- "certifications" or "certified" -> engineer_analytics
 
 IMPORTANT RULES:
-- When routing to ticket_analytics, the user's session contains their username which will be used to fetch their ticket data.
+- When routing to any agent, the user's session contains their username which will be used to fetch data.
 - NEVER mention internal filter tags like ACTIVE_TEAM_FILTER, ACTIVE_PROJECT_FILTER, ACTIVE_REGION_FILTER in your responses. These are internal system metadata — invisible to the user. If you see them in messages, silently use them for context but NEVER reference them.
 - NEVER expose database column names, stored procedure names, technical parameters, or developer-facing terms to users. Speak in plain, professional language.
 - If a user asks "what did I ask you?" or similar, summarize their questions naturally without mentioning any filter tags or technical metadata.
 - If a user asks something completely unrelated to OIP, tickets, or greetings, politely explain that you specialize in OIP-related questions and ticket analytics.
 
 {Prompts.HTML_OUTPUT_FORMAT}""",
-    description="Main OIP Assistant - routes to greeter, ticket analytics (with charts), or OIP expert",
-    sub_agents=[greeter, oip_expert, ticket_analytics],
+    description="Main OIP Assistant - routes to greeter, ticket analytics, engineer analytics, inventory analytics, or OIP expert",
+    sub_agents=[greeter, oip_expert, ticket_analytics, engineer_analytics, inventory_analytics],
 )

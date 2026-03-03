@@ -795,6 +795,358 @@ def create_breakdown_chart(
     )
 
 
+def create_pm_chart(
+    chart_type: str = "bar",
+    metric: str = "count",
+    title: str = "PM Data",
+    tool_context=None,
+) -> str:
+    """
+    Create a chart from PM checklist data stored in the session.
+
+    Reads data from the last get_pm_checklist_data() call automatically.
+    Call get_pm_checklist_data() first, then call this tool to visualize.
+
+    Args:
+        chart_type: Chart type — "bar", "pie", or "donut" (default: "bar")
+        metric: What to measure:
+                - "count" — Number of sites per field value or equipment type (default).
+                  Best for: "how many sites have each keypad model?"
+                - "quantity" — Sum of equipment quantities per site.
+                  Best for: "how many door contacts per site?"
+                - "count_by_value" — Group records by FieldValue and count sites per group.
+                  Best for: "distribution of keypad model types across sites"
+        title: Descriptive chart title (e.g., "Keypad Model Distribution")
+
+    Returns:
+        str: HTML with <!--CHART_START-->...<!--CHART_END--> chart config,
+             or an error/help message if no PM data is in session.
+
+    Example flows:
+        1. get_pm_checklist_data(field_name="Keypad Model")
+           create_pm_chart(chart_type="pie", metric="count_by_value", title="Keypad Model Distribution")
+
+        2. get_pm_checklist_data(sub_category_name="Door Contact")
+           create_pm_chart(chart_type="bar", metric="quantity", title="Door Contacts per Site")
+
+        3. get_pm_checklist_data(field_name="Panel IP")
+           create_pm_chart(chart_type="bar", metric="count", title="Panel IPs by Site")
+    """
+    if tool_context is None:
+        return "<p><span style='color:#dc2626'>Error: No session context available.</span></p>"
+
+    last_pm = tool_context.state.get("last_pm_data")
+    if not last_pm or not last_pm.get("records"):
+        return """<p><span style='color:#f59e0b'>⚠️ No PM checklist data found in this session.</span></p>
+<p>Please call get_pm_checklist_data first (e.g., ask about Panel IPs or Door Contacts), then I can chart it.</p>"""
+
+    records = last_pm["records"]
+    query_mode = last_pm.get("query_mode", "extension")
+
+    print(f"📊 [PM CHART] mode={query_mode}, metric={metric}, type={chart_type}, records={len(records)}")
+
+    chart_data = []
+
+    if metric == "quantity" and query_mode == "equipment":
+        # Bar chart: SiteName vs Quantity (for equipment mode)
+        for rec in records:
+            site = rec.get("SiteName", "Unknown")
+            qty = rec.get("Quantity", 0)
+            if isinstance(qty, str):
+                try:
+                    qty = int(qty)
+                except ValueError:
+                    qty = 0
+            chart_data.append({"category": site, "count": qty})
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["count"],
+            chart_type=chart_type,
+            description=f"Equipment quantity per site ({len(chart_data)} sites)",
+        )
+
+    elif metric == "count_by_value" and query_mode == "extension":
+        # Group by FieldValue, count sites per group (pie/donut for distribution)
+        from collections import Counter
+        value_counts = Counter(rec.get("FieldValue", "Unknown") for rec in records)
+        for value, cnt in value_counts.most_common():
+            chart_data.append({"category": str(value), "count": cnt})
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["count"],
+            chart_type=chart_type if chart_type in ("pie", "donut") else "pie",
+            description=f"Distribution of values ({len(chart_data)} distinct values)",
+        )
+
+    else:
+        # Default "count" metric: count of records per grouping key
+        from collections import Counter
+        if query_mode == "extension":
+            # Count sites per FieldValue
+            key_field = "FieldValue"
+        elif query_mode == "equipment":
+            # Count sites per SubCategoryName
+            key_field = "SubCategoryName"
+        else:
+            # Overview: count per TicketStatus
+            key_field = "TicketStatus"
+
+        value_counts = Counter(rec.get(key_field, "Unknown") for rec in records)
+        for value, cnt in value_counts.most_common():
+            chart_data.append({"category": str(value), "count": cnt})
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["count"],
+            chart_type=chart_type,
+            description=f"Count by {_humanize_key(key_field)} ({len(chart_data)} groups)",
+        )
+
+
+def create_engineer_chart(
+    metric: str = "completed",
+    group_by: str = "engineer",
+    chart_type: str = "bar",
+    title: str = None,
+    tool_context=None,
+) -> str:
+    """
+    Create a chart from engineer performance data stored in session.
+
+    Reads data from the last get_engineer_performance() call automatically.
+    Call get_engineer_performance() first, then call this tool to visualize.
+
+    Args:
+        metric: What to measure. Options:
+                - "completed" — Completed tickets per engineer/group (default)
+                - "total" — Total tickets
+                - "completion_rate" — Completion rate percentage
+                - "sla_breached" — SLA breached tickets
+                - "task_type" — Stacked bar of TR/PM/Other tickets
+        group_by: How to group data. Options:
+                  - "engineer" — Per engineer (default)
+                  - "team" — Aggregated by team
+                  - "project" — Aggregated by project
+        chart_type: "bar", "pie", "donut", or "gauge" (default: "bar")
+        title: Custom title. Auto-generated if not provided.
+
+    Returns:
+        str: HTML with <!--CHART_START-->...<!--CHART_END--> chart config
+
+    Example flows:
+        1. get_engineer_performance(team_names="Central") -> data stored in session
+           create_engineer_chart(metric="completed", group_by="engineer", title="Central Team Performance")
+
+        2. get_engineer_performance(month=1, year=2026) -> data in session
+           create_engineer_chart(metric="task_type", group_by="engineer", title="Task Type Distribution - January")
+    """
+    if tool_context is None:
+        return "<p><span style='color:#dc2626'>Error: No session context available.</span></p>"
+
+    last_data = tool_context.state.get("last_engineer_data")
+    if not last_data or not last_data.get("engineers"):
+        return """<p><span style='color:#f59e0b'>No engineer performance data found in this session.</span></p>
+<p>Please call get_engineer_performance first, then I can chart it.</p>"""
+
+    engineers = last_data["engineers"]
+
+    print(f"📊 [ENGINEER CHART] metric={metric}, group_by={group_by}, type={chart_type}, engineers={len(engineers)}")
+
+    # Metric to column mapping
+    metric_map = {
+        "completed": "CompletedTickets",
+        "total": "TotalTickets",
+        "completion_rate": "CompletionRate",
+        "sla_breached": "SLABreached",
+        "open": "OpenTickets",
+        "suspended": "SuspendedTickets",
+    }
+
+    # Aggregate data by group_by
+    from collections import defaultdict
+
+    if group_by == "team":
+        group_key = "TeamName"
+    elif group_by == "project":
+        group_key = "ProjectName"
+    else:
+        group_key = "EngineerName"
+
+    # Handle task_type as stacked bar
+    if metric == "task_type":
+        aggregated = defaultdict(lambda: {"TR": 0, "PM": 0, "Other": 0})
+        for eng in engineers:
+            key = eng.get(group_key, "Unknown")
+            aggregated[key]["TR"] += eng.get("TRTickets", 0) or 0
+            aggregated[key]["PM"] += eng.get("PMTickets", 0) or 0
+            aggregated[key]["Other"] += eng.get("OtherTickets", 0) or 0
+
+        chart_data = []
+        for name, values in aggregated.items():
+            chart_data.append({"category": name, "TR": values["TR"], "PM": values["PM"], "Other": values["Other"]})
+
+        if not title:
+            title = f"Task Type Distribution by {group_by.title()}"
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["TR", "PM", "Other"],
+            chart_type="stackedBar",
+            description=f"Task type breakdown by {group_by} ({len(chart_data)} groups)",
+            colors=["#3b82f6", "#22c55e", "#f59e0b"],  # Blue=TR, Green=PM, Orange=Other
+        )
+
+    # Single metric chart
+    col_name = metric_map.get(metric, "CompletedTickets")
+
+    # Aggregate
+    aggregated = defaultdict(float)
+    counts = defaultdict(int)
+    for eng in engineers:
+        key = eng.get(group_key, "Unknown")
+        val = eng.get(col_name, 0) or 0
+        if hasattr(val, 'as_tuple'):
+            val = float(val)
+        aggregated[key] += val
+        counts[key] += 1
+
+    # For completion_rate with grouping, compute average
+    if metric == "completion_rate" and group_by != "engineer":
+        for key in aggregated:
+            if counts[key] > 0:
+                aggregated[key] = round(aggregated[key] / counts[key], 1)
+
+    chart_data = []
+    for name, value in sorted(aggregated.items(), key=lambda x: x[1], reverse=True):
+        chart_data.append({"category": name, "value": value})
+
+    if not chart_data:
+        return "<p>No data available to chart.</p>"
+
+    # Auto-generate title
+    if not title:
+        metric_label = _humanize_key(col_name)
+        group_label = group_by.title()
+        title = f"{metric_label} by {group_label}"
+
+    # For gauge, use single value from summary
+    if chart_type == "gauge" and metric == "completion_rate":
+        summary = last_data.get("summary", {})
+        rate = summary.get("OverallCompletionRate", 0)
+        return create_completion_rate_gauge(float(rate), title=title)
+
+    return create_chart(
+        data=chart_data,
+        title=title,
+        x_key="category",
+        y_keys=["value"],
+        chart_type=chart_type,
+        description=f"{title} ({len(chart_data)} items)",
+    )
+
+
+def create_inventory_chart(
+    metric: str = "quantity",
+    group_by: str = "item",
+    chart_type: str = "bar",
+    title: str = None,
+    tool_context=None,
+) -> str:
+    """
+    Create a chart from inventory consumption data stored in session.
+
+    Reads data from the last get_inventory_consumption() call automatically.
+    Call get_inventory_consumption() first, then call this tool to visualize.
+
+    Args:
+        metric: What to measure. Options:
+                - "quantity" — Total quantity consumed per group (default)
+                - "count" — Number of transactions per group
+        group_by: How to group data. Options:
+                  - "item" — Per item/part name (default)
+                  - "site" — Per site/location
+                  - "category" — Per category
+                  - "project" — Per project
+        chart_type: "bar", "pie", or "donut" (default: "bar")
+        title: Custom title. Auto-generated if not provided.
+
+    Returns:
+        str: HTML with <!--CHART_START-->...<!--CHART_END--> chart config
+
+    Example flows:
+        1. get_inventory_consumption(month=1, year=2026) -> data stored in session
+           create_inventory_chart(metric="quantity", group_by="item", title="Parts Consumed - January")
+
+        2. get_inventory_consumption(item_name="cable") -> data in session
+           create_inventory_chart(metric="quantity", group_by="site", title="Cable Usage by Site")
+    """
+    if tool_context is None:
+        return "<p><span style='color:#dc2626'>Error: No session context available.</span></p>"
+
+    last_data = tool_context.state.get("last_inventory_data")
+    if not last_data or not last_data.get("transactions"):
+        return """<p><span style='color:#f59e0b'>No inventory data found in this session.</span></p>
+<p>Please call get_inventory_consumption first, then I can chart it.</p>"""
+
+    transactions = last_data["transactions"]
+
+    print(f"📊 [INVENTORY CHART] metric={metric}, group_by={group_by}, type={chart_type}, txns={len(transactions)}")
+
+    # Group key mapping
+    group_key_map = {
+        "item": "ItemName",
+        "site": "SiteName",
+        "category": "CategoryName",
+        "project": "ProjectName",
+    }
+    group_key = group_key_map.get(group_by, "ItemName")
+
+    from collections import defaultdict
+    aggregated = defaultdict(lambda: {"quantity": 0, "count": 0})
+
+    for txn in transactions:
+        key = txn.get(group_key, "Unknown") or "Unknown"
+        qty = txn.get("Quantity", 0) or 0
+        if hasattr(qty, 'as_tuple'):
+            qty = float(qty)
+        aggregated[key]["quantity"] += qty
+        aggregated[key]["count"] += 1
+
+    # Build chart data
+    value_key = "quantity" if metric == "quantity" else "count"
+    chart_data = []
+    for name, values in sorted(aggregated.items(), key=lambda x: x[1][value_key], reverse=True):
+        chart_data.append({"category": name, "value": values[value_key]})
+
+    if not chart_data:
+        return "<p>No data available to chart.</p>"
+
+    # Auto-generate title
+    if not title:
+        metric_label = "Quantity Consumed" if metric == "quantity" else "Transaction Count"
+        group_label = group_by.title()
+        title = f"{metric_label} by {group_label}"
+
+    return create_chart(
+        data=chart_data,
+        title=title,
+        x_key="category",
+        y_keys=["value"],
+        chart_type=chart_type,
+        description=f"{title} ({len(chart_data)} items)",
+    )
+
+
 # For testing
 if __name__ == "__main__":
     # Test ticket status chart

@@ -64,7 +64,7 @@ tmpclaude-*
 # Logs
 *.log
 logs/
-
+docs/
 # Testing
 .pytest_cache/
 .coverage
@@ -95,3 +95,4 @@ scripts/sql/
 Agentic Workflows - I.txt
 Agentic Workflows - II.txt
 Building Agents - 1.txt
+chatagent_requirements.md

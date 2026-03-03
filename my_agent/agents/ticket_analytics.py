@@ -10,7 +10,7 @@ from datetime import datetime
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 
-from ..tools.db_tools import get_ticket_summary, get_ticket_timeline, get_current_date, create_chart_from_session, get_lookups
+from ..tools.db_tools import get_ticket_summary, get_ticket_timeline, get_current_date, create_chart_from_session, get_lookups, get_pm_checklist_data
 from ..tools.chart_tools import (
     create_chart,
     create_ticket_status_chart,
@@ -18,6 +18,7 @@ from ..tools.chart_tools import (
     create_tickets_over_time_chart,
     create_project_comparison_chart,
     create_breakdown_chart,
+    create_pm_chart,
 )
 from ..prompts.templates import Prompts
 
@@ -118,6 +119,68 @@ Chart visualized above. You have 5 suspended tickets.
   - Chart type is auto-selected: **area chart** for created-vs-completed (shows backlog gap visually), line chart for single series
   - The agent can override with chart_type="line" or chart_type="area" if the user requests a specific style
   - Note: Data is capped at 500 tickets for performance. If user needs more specific data, suggest narrowing the date range.
+
+### PM Checklist Tools
+- `get_pm_checklist_data` - Retrieves PM checklist data (Panel IPs, equipment models, door contacts, etc.)
+  - Use for: site equipment details, field values (IPs, models), equipment quantities, PM codes, PM visit counts
+  - Parameters:
+    - site_name: partial match ("730" matches "A730")
+    - field_name: "Panel IP", "NVR IP", "Keypad Model", "Partition Type", "Panel Model", "DVR Model"
+    - field_value: search by value ("D1255B", "173.31.1.244")
+    - sub_category_name: "Door Contact", "Motion Detector", "Siren", "Keypad", "Panic Button"
+    - category_name: "CCTV System", "Intrusion Alarm System"
+    - project_names: comma-separated project filter
+    - team_names: comma-separated team names (e.g. "Central", "Maintenance", "Western,Eastern")
+      Teams are organizational groups, NOT geographic regions.
+    - region_names: comma-separated geographic region/province names (e.g. "Riyadh", "Makkah,Madinah")
+      Regions are StateProvince-level areas: Riyadh, Makkah, Madinah, Eastern Province, Asir, Tabuk, etc.
+      Use this when user asks about a geographic area (e.g. "PMs in Riyadh", "sites in Eastern Province")
+    - city_names: comma-separated city names (e.g. "Jeddah", "Medina,Taif")
+      Cities are within regions (e.g. Jeddah is in Makkah region, Medina is in Madinah region)
+    - date_from: start date in YYYY-MM-DD format (e.g. "2026-01-01")
+    - date_to: end date in YYYY-MM-DD format (e.g. "2026-01-31")
+    - ticket_status: "Open" or "Closed"
+    - latest_only: True by default (latest PM visit per site)
+  - Three modes (auto-detected):
+    - Extension mode (field_name or field_value set): returns IPs, models, serial numbers per site
+    - Equipment mode (sub_category_name set): returns quantities per site
+    - Overview mode (neither set): returns PM visit summaries (PMcode, date, operator, team)
+  - **CRITICAL PM STATUS MAPPING**: A completed/finished PM visit = ticket_status="Closed".
+    When users say "completed PMs", "finished PMs", "done PMs" → ALWAYS pass ticket_status="Closed".
+    The ONLY valid statuses are "Open" and "Closed". NEVER pass "Completed".
+  - **GEOGRAPHIC HIERARCHY** (Teams ≠ Regions ≠ Cities):
+    - **Teams** (team_names): Organizational groups like "Central", "Maintenance", "Western", "Eastern"
+    - **Regions** (region_names): Geographic provinces/states like "Riyadh", "Makkah", "Madinah", "Eastern Province"
+    - **Cities** (city_names): Cities within regions like "Jeddah" (in Makkah), "Medina" (in Madinah), "Taif"
+    - A "Central" team can have sites in multiple regions. Use region_names for geographic filtering, team_names for team filtering.
+    - When user says "in Riyadh" or "Riyadh region" → use region_names="Riyadh" (NOT team_names)
+    - When user says "Central team" → use team_names="Central"
+  - After calling, use `create_pm_chart()` to visualize — it reads data from session automatically
+  - Example flow:
+    1. Call get_pm_checklist_data(site_name="730", field_name="Panel IP") -> data stored in session
+    2. Call create_pm_chart(title="Panel IPs") -> reads session data, creates chart
+
+- `create_pm_chart` - Creates a chart from PM checklist data stored in session
+  - Parameters:
+    - chart_type: "bar", "pie", or "donut" (default: "bar")
+    - metric: "count" (sites per value), "quantity" (equipment qty per site), "count_by_value" (value distribution)
+    - title: Descriptive chart title
+
+## PM Checklist Chart Rules
+
+| User Request | get_pm_checklist_data params | create_pm_chart params |
+|---|---|---|
+| "Panel IP for ATM 730" | site_name="730", field_name="Panel IP" | (no chart needed, text response) |
+| "List all Panel IPs" | field_name="Panel IP" | chart_type="bar", metric="count" |
+| "How many ATMs have D1255B?" | field_value="D1255B" | (no chart, just count from summary) |
+| "Which sites have what keypad models?" | field_name="Keypad Model" | chart_type="pie", metric="count_by_value", title="Keypad Model Distribution" |
+| "How many Door Contacts installed?" | sub_category_name="Door Contact" | chart_type="bar", metric="quantity", title="Door Contacts per Site" |
+| "Panel IPs for completed sites" | field_name="Panel IP", ticket_status="Closed" | (text response with table) |
+| "How many PMs completed in Central team in Jan?" | team_names="Central", ticket_status="Closed", date_from="2026-01-01", date_to="2026-01-31" | (text: count from summary) |
+| "PMs in Riyadh region last month" | region_names="Riyadh", date_from="2026-02-01", date_to="2026-02-28" | (text response) |
+| "Completed PMs in Eastern Province" | region_names="Eastern Province", ticket_status="Closed" | (text response) |
+| "Sites in Jeddah" | city_names="Jeddah" | (text response) |
+| "PMs in Makkah and Madinah regions" | region_names="Makkah,Madinah" | (text response) |
 
 ### 2. Session-Aware Chart Tool (FLEXIBLE for ANY visualization)
 - `create_chart_from_session` - Creates a chart using data stored in session
@@ -607,6 +670,17 @@ Use this agent for questions like:
 - "Show tickets by region"
 - "Compare ANB vs other projects"
 - "Tickets per team breakdown"
+- "What is the panel IP for ATM 730?"
+- "List all Panel IPs for completed PM sites"
+- "How many ATMs have keypad model D1255B?"
+- "Which sites have what keypad models?"
+- "How many door contacts are installed?"
+- "Show door contacts per site in a chart"
+- "PM code for site A730"
+- "PMs in Riyadh region"
+- "Sites in Jeddah city"
+- "How many PMs in Makkah?"
+- "Completed PMs in Eastern Province"
 """,
     tools=[
         # Database tools
@@ -614,6 +688,9 @@ Use this agent for questions like:
         get_ticket_timeline,
         get_current_date,
         get_lookups,
+        # PM Checklist tools
+        get_pm_checklist_data,
+        create_pm_chart,
         # Session-aware chart tools (PREFERRED - use breakdown data from session)
         create_chart_from_session,
         create_breakdown_chart,  # SIMPLE: just pass breakdown_type="project"/"region"/"team"

@@ -10,6 +10,7 @@ Supports multiple project/team selections via comma-separated values.
 
 import os
 import logging
+import struct
 import pyodbc
 from typing import Optional, List, Union
 from datetime import datetime, timedelta
@@ -54,7 +55,16 @@ def get_db_connection():
         password = os.getenv("SQL_SERVER_PASSWORD", "")
         connection_string += f"UID={user};PWD={password};"
 
-    return pyodbc.connect(connection_string)
+    conn = pyodbc.connect(connection_string)
+
+    # Register converter for SQL Server's datetimeoffset type (ODBC type -155)
+    # which pyodbc doesn't support natively. Converts to Python datetime.
+    def _handle_datetimeoffset(dto_value):
+        tup = struct.unpack("<6hI2h", dto_value)
+        return datetime(tup[0], tup[1], tup[2], tup[3], tup[4], tup[5], tup[6] // 1000)
+
+    conn.add_output_converter(-155, _handle_datetimeoffset)
+    return conn
 
 
 def get_current_date() -> dict:
@@ -706,6 +716,305 @@ def _extract_year(text: str) -> Optional[int]:
     if match:
         return int(match.group())
     return None
+
+
+def get_pm_checklist_data(
+    site_name: Optional[str] = None,
+    field_name: Optional[str] = None,
+    field_value: Optional[str] = None,
+    sub_category_name: Optional[str] = None,
+    pm_code: Optional[str] = None,
+    ticket_status: Optional[str] = None,
+    category_name: Optional[str] = None,
+    project_names: Optional[str] = None,
+    team_names: Optional[str] = None,
+    region_names: Optional[str] = None,
+    city_names: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    latest_only: bool = True,
+    tool_context: "ToolContext" = None,
+) -> dict:
+    """
+    Retrieve PM (Preventive Maintenance) checklist data from the TickTraq database.
+
+    Use this tool for questions about site equipment collected during PM visits:
+    Panel IPs, NVR IPs, keypad models, door contacts, motion detectors, PM codes, etc.
+
+    Three query modes (determined automatically by which parameters you provide):
+      1. Extension mode: Set field_name or field_value to get IPs, models, serial numbers
+      2. Equipment mode: Set sub_category_name to get equipment quantities per site
+      3. Overview mode: Set neither to get PM visit summaries
+
+    Args:
+        site_name: Filter by site name. Supports partial match — "730" matches "A730".
+        field_name: Extension field to retrieve. Values include:
+                    "Panel IP", "NVR IP", "Keypad Model", "Partition Type",
+                    "Recording started on", "Panel Model", "DVR Model".
+        field_value: Search by a specific field value, e.g. "D1255B" or "173.31.1.244".
+                     Matches across all field names.
+        sub_category_name: Equipment/sub-category name. Values include:
+                          "Door Contact", "Motion Detector", "Siren", "Keypad",
+                          "Panic Button", "Glass Break Detector", "Smoke Detector".
+        pm_code: Filter by PM visit code (e.g. "CD627").
+        ticket_status: Filter by ticket status. Use "Closed" for completed PM visits.
+                       Values: "Open", "Closed".
+        category_name: Filter by system category: "CCTV System", "Intrusion Alarm System",
+                       "CCTV", "Intrusion Alarm".
+        project_names: Comma-separated project names to filter by (e.g. "ANB,Barclays").
+        team_names: Comma-separated team names (e.g. "Central,Western,Eastern").
+                    Teams are organizational groups (Central, Maintenance, etc.).
+        region_names: Comma-separated geographic region/province names (e.g. "Riyadh,Makkah").
+                      Regions are StateProvince-level: "Riyadh", "Makkah", "Madinah",
+                      "Eastern Province", "Asir", "Tabuk", "Hail", "Northern Borders",
+                      "Jazan", "Najran", "Al Bahah", "Al Jawf", "Al Qassim".
+        city_names: Comma-separated city names (e.g. "Jeddah,Medina,Taif").
+                    Cities are within regions, e.g. Jeddah is in Makkah region.
+        date_from: Start date filter on PM visit date, in YYYY-MM-DD format (e.g. "2026-01-01").
+        date_to: End date filter on PM visit date, in YYYY-MM-DD format (e.g. "2026-01-31").
+        latest_only: If True (default), returns only the latest PM visit per site.
+                     Set to False to get all historical visits.
+
+    Returns:
+        dict containing:
+            - records: List of row dicts (fields depend on query mode)
+            - summary: Dict with TotalSites, optional TotalQuantity, Filters
+            - query_mode: "extension", "equipment", or "overview"
+            - count: Number of records returned
+            - Message: "Success" or error description
+
+    Example queries:
+        - "What is the panel IP for ATM 730?"
+          -> get_pm_checklist_data(site_name="730", field_name="Panel IP")
+        - "List all Panel IPs for completed PM sites"
+          -> get_pm_checklist_data(field_name="Panel IP", ticket_status="Closed")
+        - "How many ATMs have keypad model D1255B?"
+          -> get_pm_checklist_data(field_value="D1255B")
+        - "Which sites have what keypad models?"
+          -> get_pm_checklist_data(field_name="Keypad Model")
+        - "How many total Door Contacts are installed?"
+          -> get_pm_checklist_data(sub_category_name="Door Contact")
+        - "How many PMs completed in Central team in January?"
+          -> get_pm_checklist_data(team_names="Central", ticket_status="Closed", date_from="2026-01-01", date_to="2026-01-31")
+        - "PMs in Riyadh region last month"
+          -> get_pm_checklist_data(region_names="Riyadh", date_from="2026-02-01", date_to="2026-02-28")
+        - "Sites in Jeddah city"
+          -> get_pm_checklist_data(city_names="Jeddah")
+    """
+    try:
+        logger.info("🔧 Fetching PM checklist data...")
+        print(f"🔍 [PM] site={site_name}, field_name={field_name}, field_value={field_value}, "
+              f"sub_cat={sub_category_name}, pm_code={pm_code}, status={ticket_status}, "
+              f"category={category_name}, projects={project_names}, teams={team_names}, "
+              f"regions={region_names}, cities={city_names}, "
+              f"date_from={date_from}, date_to={date_to}, latest={latest_only}")
+
+        # Get username from session state
+        username = None
+        if tool_context is not None:
+            username = tool_context.state.get("username")
+
+        if not username:
+            return {"records": [], "summary": {}, "query_mode": "unknown", "count": 0,
+                    "Message": "Error: Username not found in session. Please ensure you are logged in."}
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Build parameter list
+        params = [username]
+        param_markers = ['@Username=?']
+
+        if site_name:
+            params.append(site_name)
+            param_markers.append('@SiteName=?')
+        if field_name:
+            params.append(field_name)
+            param_markers.append('@FieldName=?')
+        if field_value:
+            params.append(field_value)
+            param_markers.append('@FieldValue=?')
+        if sub_category_name:
+            params.append(sub_category_name)
+            param_markers.append('@SubCategoryName=?')
+        if pm_code:
+            params.append(pm_code)
+            param_markers.append('@PMCode=?')
+        if ticket_status:
+            params.append(ticket_status)
+            param_markers.append('@TicketStatus=?')
+        if category_name:
+            params.append(category_name)
+            param_markers.append('@CategoryName=?')
+        if project_names:
+            params.append(project_names)
+            param_markers.append('@ProjectNames=?')
+        if team_names:
+            params.append(team_names)
+            param_markers.append('@TeamNames=?')
+        if region_names:
+            params.append(region_names)
+            param_markers.append('@RegionNames=?')
+        if city_names:
+            params.append(city_names)
+            param_markers.append('@CityNames=?')
+        if date_from:
+            params.append(date_from)
+            param_markers.append('@DateFrom=?')
+        if date_to:
+            params.append(date_to)
+            param_markers.append('@DateTo=?')
+        if not latest_only:
+            params.append(0)
+            param_markers.append('@LatestOnly=?')
+
+        sql = f"EXEC usp_Chatbot_GetPMChecklistData {', '.join(param_markers)}"
+        logger.info("🔄 Querying PM checklist data...")
+        cursor.execute(sql, params)
+
+        # Result Set 1: Detail rows
+        rows = cursor.fetchall()
+        records = []
+        sp_early_return = None
+        if rows and cursor.description:
+            columns = [col[0] for col in cursor.description]
+            # Detect SP early-return error (e.g. "No matching projects found", "User not found")
+            if columns == ['TotalResults', 'Message']:
+                sp_early_return = dict(zip(columns, rows[0]))
+                print(f"⚠️ [PM] SP early return: {sp_early_return}")
+            else:
+                for row in rows:
+                    row_dict = dict(zip(columns, row))
+                    # Convert datetime/Decimal to serializable types
+                    for key in row_dict:
+                        val = row_dict[key]
+                        if val is not None:
+                            if hasattr(val, 'isoformat'):  # datetime
+                                row_dict[key] = val.isoformat()
+                            elif hasattr(val, 'as_tuple'):  # Decimal
+                                row_dict[key] = float(val)
+                    records.append(row_dict)
+
+        # Result Set 2: Summary
+        summary = {}
+        if cursor.nextset():
+            summary_rows = cursor.fetchall()
+            if summary_rows and cursor.description:
+                summary_cols = [col[0] for col in cursor.description]
+                summary = dict(zip(summary_cols, summary_rows[0]))
+                # Convert Decimal/datetime in summary
+                for key in summary:
+                    val = summary[key]
+                    if val is not None:
+                        if hasattr(val, 'isoformat'):
+                            summary[key] = val.isoformat()
+                        elif hasattr(val, 'as_tuple'):
+                            summary[key] = float(val)
+
+        cursor.close()
+        conn.close()
+
+        # Determine query mode
+        if field_name or field_value:
+            query_mode = "extension"
+        elif sub_category_name:
+            query_mode = "equipment"
+        else:
+            query_mode = "overview"
+
+        print(f"🔧 [PM] mode={query_mode}, records={len(records)}, summary={summary}")
+
+        # Cross-project hint: if 0 records with site_name + project filter,
+        # check if the site exists in a different project the user has access to
+        no_results_message = (
+            sp_early_return['Message'] if sp_early_return
+            else "No PM checklist data found matching the criteria."
+        )
+        if not records and site_name and project_names:
+            try:
+                hint_conn = get_db_connection()
+                hint_cursor = hint_conn.cursor()
+                # Re-run without project filter to see if site exists elsewhere
+                hint_params = [username, site_name]
+                hint_markers = ['@Username=?', '@SiteName=?']
+                if field_name:
+                    hint_params.append(field_name)
+                    hint_markers.append('@FieldName=?')
+                hint_sql = f"EXEC usp_Chatbot_GetPMChecklistData {', '.join(hint_markers)}"
+                hint_cursor.execute(hint_sql, hint_params)
+                hint_rows = hint_cursor.fetchall()
+                if hint_rows and hint_cursor.description:
+                    hint_cols = [c[0] for c in hint_cursor.description]
+                    # Check if we got actual data rows (not "User not found" etc.)
+                    if 'SiteName' in hint_cols:
+                        # Find which project(s) the site belongs to
+                        found_projects = set()
+                        for r in hint_rows:
+                            rd = dict(zip(hint_cols, r))
+                            # Look up project name from ticket
+                            found_projects.add(rd.get('SiteName', ''))
+                        # Get the actual project name via a quick query
+                        hint_cursor.close()
+                        hint_cursor = hint_conn.cursor()
+                        hint_cursor.execute(
+                            "SELECT DISTINCT p.Name FROM Tickets t "
+                            "INNER JOIN Projects p ON p.Id = t.ProjectId "
+                            "WHERE t.SiteName LIKE '%' + ? + '%' AND t.IsActive = 1",
+                            [site_name]
+                        )
+                        proj_rows = hint_cursor.fetchall()
+                        if proj_rows:
+                            actual_projects = [r[0] for r in proj_rows]
+                            no_results_message = (
+                                f"Site '{site_name}' was not found in the currently selected project "
+                                f"({project_names}). This site exists in: {', '.join(actual_projects)}. "
+                                f"Please select the correct project or remove the project filter to see results."
+                            )
+                            print(f"🔍 [PM HINT] Site found in other project(s): {actual_projects}")
+                hint_cursor.close()
+                hint_conn.close()
+            except Exception as hint_err:
+                print(f"⚠️ [PM HINT] Cross-project check failed: {hint_err}")
+
+        result = {
+            "records": records,
+            "summary": summary,
+            "query_mode": query_mode,
+            "count": len(records),
+            "Message": "Success" if records else no_results_message,
+        }
+
+        # Store in session for follow-up chart requests
+        if tool_context is not None:
+            tool_context.state["last_pm_data"] = result
+            tool_context.state["last_query_type"] = "pm_checklist"
+            # Build query context description
+            ctx_parts = []
+            if field_name:
+                ctx_parts.append(field_name)
+            if field_value:
+                ctx_parts.append(f"value '{field_value}'")
+            if sub_category_name:
+                ctx_parts.append(sub_category_name)
+            if site_name:
+                ctx_parts.append(f"site {site_name}")
+            tool_context.state["last_query_context"] = " ".join(ctx_parts) if ctx_parts else "PM checklist"
+            logger.info("📝 PM data stored in session for chart requests")
+
+        return result
+
+    except pyodbc.Error as db_error:
+        print(f"❌ [DB ERROR] {db_error}")
+        import traceback
+        traceback.print_exc()
+        return {"records": [], "summary": {}, "query_mode": "unknown", "count": 0,
+                "Message": f"Database error: {str(db_error)}"}
+    except Exception as e:
+        print(f"❌ [ERROR] {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"records": [], "summary": {}, "query_mode": "unknown", "count": 0,
+                "Message": f"Error: {type(e).__name__}: {str(e)}"}
 
 
 def create_chart_from_session(
