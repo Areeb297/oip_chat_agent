@@ -165,6 +165,40 @@ def get_session_messages(session_id: str) -> list[dict]:
         return []
 
 
+def delete_messages_from(session_id: str, message_id: int) -> int:
+    """Delete a message and all messages after it in a session.
+
+    Returns the number of rows deleted, or -1 on failure.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM dbo.ChatbotMessages WHERE SessionId = ? AND Id >= ?",
+            session_id,
+            message_id,
+        )
+        deleted = cursor.rowcount
+
+        # Touch session timestamp
+        cursor.execute(
+            "UPDATE dbo.ChatbotSessions SET UpdatedAt = SYSDATETIMEOFFSET() WHERE Id = ?",
+            session_id,
+        )
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info(
+            "Deleted %d messages from session %s (from messageId %d)",
+            deleted, session_id, message_id,
+        )
+        return deleted
+    except Exception as e:
+        logger.error(f"Failed to delete messages from session {session_id}: {e}")
+        return -1
+
+
 def delete_session(session_id: str) -> bool:
     """Soft-delete a session (set IsDeleted=1)."""
     try:

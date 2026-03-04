@@ -13,6 +13,7 @@ from google.adk.models.lite_llm import LiteLlm
 
 from ..tools.inventory_tools import get_inventory_consumption
 from ..tools.chart_tools import create_inventory_chart
+from ..tools.chart_guardrails import fix_chart_output
 from ..prompts.templates import Prompts
 
 
@@ -183,6 +184,7 @@ inventory_analytics = LlmAgent(
     name="inventory_analytics",
     model=AGENT_MODEL,
     instruction=INVENTORY_ANALYTICS_INSTRUCTION,
+    after_model_callback=fix_chart_output,
     description="""Handles spare parts consumption, inventory usage tracking, and invoicing lists. Use for:
 - "How many spare parts consumed in January?"
 - "List sites where cable was used"

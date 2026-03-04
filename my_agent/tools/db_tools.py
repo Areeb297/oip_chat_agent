@@ -11,12 +11,52 @@ Supports multiple project/team selections via comma-separated values.
 import os
 import logging
 import struct
+import time
+import functools
 import pyodbc
 from typing import Optional, List, Union
 from datetime import datetime, timedelta
 
 # Configure logger for this module
 logger = logging.getLogger("oip_assistant.tools.db")
+
+
+# =============================================================================
+# RETRY DECORATOR FOR DB TOOLS
+# =============================================================================
+def retry_on_db_error(max_retries: int = 2, backoff_seconds: float = 1.0):
+    """Retry decorator for database operations that may fail transiently.
+
+    Catches pyodbc errors and connection failures, retries up to max_retries times
+    with exponential backoff. Returns a friendly error dict on final failure.
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except (pyodbc.Error, pyodbc.OperationalError, pyodbc.DatabaseError,
+                        ConnectionError, OSError) as e:
+                    last_error = e
+                    if attempt < max_retries:
+                        wait = backoff_seconds * (2 ** attempt)
+                        logger.warning(f"🔄 DB retry {attempt + 1}/{max_retries} for {func.__name__}: "
+                                       f"{type(e).__name__}: {e} — waiting {wait}s")
+                        print(f"🔄 [RETRY] {func.__name__} attempt {attempt + 2}/{max_retries + 1} in {wait}s")
+                        time.sleep(wait)
+                    else:
+                        logger.error(f"❌ DB failed after {max_retries + 1} attempts for {func.__name__}: {e}")
+                        print(f"❌ [DB FAIL] {func.__name__} failed after {max_retries + 1} attempts: {e}")
+            # All retries exhausted
+            return {
+                "status": "error",
+                "Message": f"Database connection issue after {max_retries + 1} attempts. Please try again.",
+                "error_detail": f"{type(last_error).__name__}: {str(last_error)}"
+            }
+        return wrapper
+    return decorator
 
 # Import ToolContext for session state access
 try:
@@ -25,6 +65,7 @@ except ImportError:
     ToolContext = None
 
 
+@retry_on_db_error(max_retries=2, backoff_seconds=1.0)
 def get_db_connection():
     """
     Create SQL Server connection using environment variables or defaults.

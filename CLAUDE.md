@@ -81,57 +81,84 @@ TickTraq Webapp (.NET/Angular)
         │
         │  POST /run_sse (SSE Stream)
         ▼
-┌─────────────────────────────────────────────────────┐
-│  FastAPI Server (port 8080)                         │
-│  - Filter injection (project/team/region tags)      │
-│  - Session state management (username, role)        │
-│  - SSE streaming with status updates                │
-│  - Markdown→HTML conversion, filter tag cleanup     │
-│  - Chat persistence (ChatbotMessages DB)            │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  FastAPI Server (port 8080)                              │
+│  - Filter injection (project/team/region tags)           │
+│  - Session state management (username, role)             │
+│  - SSE streaming with status updates                     │
+│  - Markdown→HTML conversion, filter tag cleanup          │
+│  - Chat persistence (ChatbotMessages/ChatbotSessions DB) │
+│  - Follow-up suggestions (rule-based + LLM boost)        │
+│  - Session title generation (GPT-4o-mini)                │
+└──────────────────────────────────────────────────────────┘
         │
         │  ADK Runner
         ▼
-┌─────────────────────────────────────────────────────┐
-│  root_agent (Coordinator/Dispatcher)                │
-│  Pattern: LLM-driven delegation via transfer        │
-│  Model: gemini-2.5-flash                            │
-│                                                     │
-│  ┌─────────┐  ┌──────────────────┐  ┌───────────┐  │
-│  │ greeter │  │ ticket_analytics │  │ oip_expert│  │
-│  │ (no     │  │ (10 tools)       │  │ (1 tool)  │  │
-│  │  tools) │  │ ReAct reasoning  │  │ CoT + RAG │  │
-│  └─────────┘  └──────────────────┘  └───────────┘  │
-│                    │          │           │          │
-│              SQL Server  Chart Engine  FAISS Index   │
-│              (TickTraq)  (Recharts)   (Vector DB)   │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  root_agent (Coordinator/Dispatcher) — no tools          │
+│  Pattern: LLM-driven delegation via transfer_to_agent()  │
+│  Model: x-ai/grok-4.1-fast (prod: gemini-2.5-flash)     │
+│                                                          │
+│  ┌─────────┐ ┌────────────────┐ ┌───────────┐           │
+│  │ greeter │ │ticket_analytics│ │ oip_expert│           │
+│  │ (0)     │ │ (13 tools)     │ │ (1 tool)  │           │
+│  └─────────┘ │ ReAct          │ │ CoT + RAG │           │
+│              └────────────────┘ └───────────┘           │
+│  ┌────────────────────┐ ┌─────────────────────┐         │
+│  │engineer_analytics  │ │inventory_analytics  │         │
+│  │ (3 tools)          │ │ (2 tools)           │         │
+│  │ ReAct + DailyLogs  │ │ ReAct               │         │
+│  └────────────────────┘ └─────────────────────┘         │
+│        │          │          │          │                │
+│   SQL Server  Chart Engine  FAISS   DailyActivityLog    │
+│   (TickTraq)  (Recharts)   (RAG)   (Engineer Logs)     │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Design Pattern Used: Coordinator/Dispatcher
 This project follows the **Coordinator/Dispatcher** multi-agent pattern from Google ADK. The root agent is an LLM agent that analyzes user intent and delegates to specialist sub-agents via `transfer_to_agent()`. Sub-agent `description` fields are critical — the coordinator LLM uses them to make routing decisions.
 
+### ADK Plugins (Error Handling & Retry)
+The Runner uses Google ADK's plugin system for robust error handling:
+
+- **`OIPToolRetryPlugin`** (extends `ReflectAndRetryToolPlugin`) — registered on Runner in `main.py`
+  - Detects `{"status": "error"}` in tool results → triggers ADK reflect-and-retry
+  - Detects empty chart data / malformed chart JSON → triggers retry
+  - Max 2 retries per tool — LLM reflects on error and adjusts parameters
+- **`retry_on_db_error`** decorator on `get_db_connection()` in `db_tools.py`
+  - Handles connection-level failures (SQL Server down, network timeout)
+  - 2 retries with exponential backoff (1s, 2s)
+
+Enhancement roadmap: See `docs/agentic_oip_enhancements.md` for planned plugins (response validation, parameter pre-check).
+
 ## Agent Architecture
 
-**Total: 1 Root Agent + 3 Active Sub-Agents**
+**Total: 1 Root Agent + 5 Sub-Agents (1 orphaned)**
 
 ```
-root_agent (oip_assistant)
-    ├── greeter          → Greetings (English/Arabic)
-    ├── oip_expert       → OIP documentation (RAG)
-    └── ticket_analytics → Ticket data + Charts (DB + Recharts)
+root_agent (oip_assistant)          — Coordinator/Dispatcher, no tools
+    ├── greeter                     — Greetings (English/Arabic), no tools
+    ├── oip_expert                  — OIP documentation (RAG), 1 tool
+    ├── ticket_analytics            — Tickets, SLA, PM checklists, charts, 13 tools
+    ├── engineer_analytics          — Engineer performance, daily logs, certs, 3 tools
+    └── inventory_analytics         — Spare parts consumption, 2 tools
+
+    (orphaned) data_visualization   — Dead code, not registered as sub-agent
 ```
 
 ### 1. Root Agent (Orchestrator)
 **Name**: `oip_assistant`
 **File**: `my_agent/agent.py`
 **Model**: gemini-2.5-flash (or OpenRouter x-ai/grok-4.1-fast)
-**Role**: Routes queries to appropriate sub-agents based on intent
+**Role**: Routes queries to appropriate sub-agents based on intent. No tools — pure coordinator.
 
 **Routing Logic**:
 - Greeting patterns (hi, hello, marhaba) → `greeter`
-- Ticket/workload/SLA queries → `ticket_analytics`
+- Ticket/workload/SLA/PM checklist queries → `ticket_analytics`
 - OIP platform/documentation questions → `oip_expert`
+- Engineer performance, daily activity logs, certifications → `engineer_analytics`
+- Spare parts, inventory, consumption → `inventory_analytics`
+- General follow-ups → answers directly
 
 ### 2. Greeter Sub-Agent
 **Name**: `greeter`
@@ -153,23 +180,26 @@ root_agent (oip_assistant)
 ### 4. Ticket Analytics Sub-Agent
 **Name**: `ticket_analytics`
 **File**: `my_agent/agents/ticket_analytics.py`
-**Purpose**: Ticket queries, workload analysis, SLA tracking, visualizations
-**Tools** (10 total):
+**Purpose**: Ticket queries, workload analysis, SLA tracking, PM checklist data, visualizations
+**Tools** (13 total):
 
 **Database Tools:**
 - `get_ticket_summary()` - Fetch ticket statistics from SQL Server (role-based filtering)
+- `get_ticket_timeline()` - Time-series aggregation (week/month/quarter/year)
+- `get_pm_checklist_data()` - PM site equipment data (Panel IPs, models, quantities)
 - `get_current_date()` - Get date context for time-based queries
 - `get_lookups()` - Reference data (projects, teams, regions, statuses)
 
 **Session-Aware Chart Tools:**
 - `create_chart_from_session()` - Flexible metric selection from session data (preferred for "chart the above")
 - `create_breakdown_chart()` - Simplified breakdown by project/region/team
+- `create_pm_chart()` - PM data charts (equipment by site, field value distribution)
 
 **Direct Chart Tools:**
 - `create_chart()` - General purpose chart (auto-selects type)
-- `create_ticket_status_chart()` - Pie chart of ticket statuses
+- `create_ticket_status_chart()` - Donut chart of ticket statuses
 - `create_completion_rate_gauge()` - Gauge chart for completion rate
-- `create_tickets_over_time_chart()` - Line chart trends
+- `create_tickets_over_time_chart()` - Line/area chart trends
 - `create_project_comparison_chart()` - Bar chart comparison
 
 **Reasoning Pattern**: ReAct (THOUGHT → ACTION → OBSERVATION → RESPONSE)
@@ -178,43 +208,93 @@ root_agent (oip_assistant)
 - Natural language time expressions (this month, last week, Q4 2025)
 - Dynamic date context (current month, last month auto-calculated)
 - Derived metrics: within_sla, non_suspended, remaining, completion_rate
+- PM checklist: 3 modes (extension fields, equipment quantities, site overview)
 
-### Unused Agent (Not Integrated)
+### 5. Engineer Analytics Sub-Agent
+**Name**: `engineer_analytics`
+**File**: `my_agent/agents/engineer_analytics.py`
+**Purpose**: Per-engineer ticket performance, daily activity logs, certification compliance
+**Tools** (3 total):
+- `get_engineer_performance()` - Per-engineer ticket stats + optional daily activity logs
+- `get_certification_status()` - Expiring/expired certifications
+- `create_engineer_chart()` - Engineer data visualizations
+
+**Daily Activity Logs** (DailyActivityLog table):
+Engineers submit daily field records in TickTraq capturing:
+- Activity type: TR (Trouble Report), PM (Preventive Maintenance), Other
+- Working date, start/end time, duration in hours
+- Distance travelled to site (km)
+- Overtime minutes
+- Which ticket was worked on
+- Hotel stay (overnight for remote sites)
+
+Triggered by `get_engineer_performance(include_activity=True)` which returns a 3rd result set from the stored procedure. Users ask: "show daily logs", "work hours", "distance travelled", "what did engineers do this week".
+
+**Reasoning Pattern**: ReAct
+**Key Features**:
+- Task type breakdown: TR/PM/Other per engineer
+- Certification expiry tracking with grace period alerts
+- Session state for chart follow-ups (last_engineer_data)
+
+### 6. Inventory Analytics Sub-Agent
+**Name**: `inventory_analytics`
+**File**: `my_agent/agents/inventory_analytics.py`
+**Purpose**: Spare parts consumption, site-level usage reports for invoicing
+**Tools** (2 total):
+- `get_inventory_consumption()` - Spare parts transactions (consumed/returned)
+- `create_inventory_chart()` - Inventory data visualizations
+
+**Reasoning Pattern**: ReAct
+**Key Features**:
+- Transaction types: OUT (consumed, default), IN (returned), ALL
+- Groups by item, site, category, or project
+- Session state for chart follow-ups (last_inventory_data)
+
+### Orphaned Agent (Dead Code)
 **Name**: `data_visualization`
 **File**: `my_agent/agents/data_visualization.py`
-**Status**: Defined but NOT registered as a sub-agent
-**Note**: Chart functionality was merged into `ticket_analytics` instead
+**Status**: Defined but NOT imported or registered as a sub-agent
+**Note**: Chart functionality was merged into `ticket_analytics` instead. This file can be deleted.
 
-## Tools Reference
+## Tools Reference (19 total across all agents)
 
-### RAG Tool
-**File**: `my_agent/tools/rag_tool.py`
+### RAG Tool (`my_agent/tools/rag_tool.py`)
+- `search_oip_documents(query, top_k=5)` → `{status, query, results[], context, message}`
 
-```python
-search_oip_documents(query: str, top_k: int = 5) -> dict
-```
-Returns: `{status, query, results[], context, message}`
+### Database Tools (`my_agent/tools/db_tools.py`)
+- `get_ticket_summary(project_names, team_names, region_names, month, year, date_from, date_to, include_breakdown)` → `{TotalTickets, OpenTickets, CompletedTickets, SLABreached, CompletionRate, by_region[], by_project[], by_team[]}`
+- `get_ticket_timeline(period, project_names, team_names, region_names, date_from, date_to)` → `{timeline: [{Period, TicketsCreated, TicketsCompleted}]}`
+- `get_pm_checklist_data(site_name, field_name, field_value, sub_category_name, ...)` → 3 modes: extension, equipment, overview
+- `get_current_date()` → `{today, current_month, current_year, ...}`
+- `get_lookups(lookup_type)` → `{regions[], projects[], teams[], statuses[]}`
+- `create_chart_from_session(metrics, chart_type, title)` → reads `last_ticket_data` from session
 
-### Database Tools
-**File**: `my_agent/tools/db_tools.py`
+### Engineer Tools (`my_agent/tools/engineer_tools.py`)
+- `get_engineer_performance(employee_names, project_names, team_names, region_names, month, year, date_from, date_to, include_activity)` → `{engineers[], summary, activity_log[] (if include_activity=True)}`
+- `get_certification_status(project_names, employee_names, expiring_within_days, show_all)` → `{certifications[], summary}`
 
-```python
-get_ticket_summary(
-    project_names: str = None,   # Single or comma-separated
-    team_names: str = None,      # Single or comma-separated
-    month: int = None,           # 1-12
-    year: int = None,            # 2020-2030
-    date_from: str = None,       # YYYY-MM-DD
-    date_to: str = None,         # YYYY-MM-DD
-    tool_context: ToolContext    # ADK session state
-) -> dict
-```
-Returns: `{TotalTickets, OpenTickets, SuspendedTickets, CompletedTickets, PendingApproval, SLABreached, CompletionRate, ...}`
+### Inventory Tools (`my_agent/tools/inventory_tools.py`)
+- `get_inventory_consumption(project_names, item_name, item_code, category_name, month, year, date_from, date_to, transaction_type)` → `{transactions[], summary}`
 
-### Chart Tools
-**File**: `my_agent/tools/chart_tools.py`
+### Chart Tools (`my_agent/tools/chart_tools.py`)
+All return HTML with `<!--CHART_START-->JSON<!--CHART_END-->` for frontend Recharts rendering:
+- `create_chart()` — General purpose (auto-selects type)
+- `create_ticket_status_chart()` — Donut chart of statuses
+- `create_completion_rate_gauge()` — Gauge chart
+- `create_tickets_over_time_chart()` — Line/area trends (reads from session)
+- `create_project_comparison_chart()` — Bar chart comparison
+- `create_breakdown_chart()` — Breakdown by project/region/team (reads from session)
+- `create_pm_chart()` — PM data charts (reads from session)
+- `create_engineer_chart()` — Engineer data charts (reads from session)
+- `create_inventory_chart()` — Inventory data charts (reads from session)
 
-All chart tools return HTML strings with embedded Recharts JSON configuration for frontend rendering.
+### Chat History Tools (`my_agent/tools/chat_history.py`)
+Not ADK tools — called by `main.py` for DB persistence:
+- `save_message()`, `get_sessions()`, `get_session_messages()`, `delete_messages_from()`, `delete_session()`
+
+### Suggestions (`my_agent/tools/suggestions.py`)
+Not an ADK tool — called by `main.py` after responses:
+- `generate_suggestions(user_message, agent_response, agent_name)` → `List[str]` (3-4 follow-up questions)
 
 ## Backend API Endpoints
 
@@ -223,9 +303,14 @@ All chart tools return HTML strings with embedded Recharts JSON configuration fo
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/health` | GET | Health check |
-| `/chat` | POST | Simple non-streaming chat |
-| `/session/new` | POST | Create new chat session |
+| `/chat` | POST | Simple non-streaming chat (legacy) |
+| `/session/new` | POST | Create new chat session (legacy) |
 | `/run_sse` | POST | **Main endpoint** - Streaming SSE with status updates |
+| `/sessions` | GET | List user's chat sessions |
+| `/sessions/{id}/messages` | GET | Load session messages |
+| `/sessions/{id}` | DELETE | Soft-delete session |
+| `/sessions/{id}/title` | PATCH | Rename session |
+| `/sessions/{id}/messages/from/{msg_id}` | DELETE | Delete message + all after it |
 
 ### Request Format (run_sse)
 ```json
@@ -255,17 +340,19 @@ The frontend is embedded in the **TickTraq .NET/Angular webapp** (separate repos
 **Connection**: ODBC Driver 17
 **Host**: `LAPTOP-3BGTAL2E\SQLEXPRESS`
 
-**Stored Procedure**: `usp_Chatbot_GetTicketSummary`
-```sql
-EXEC usp_Chatbot_GetTicketSummary
-    @Username = 'john.doe',
-    @ProjectNames = 'ANB,Barclays',
-    @TeamNames = 'Development',
-    @Month = 1,
-    @Year = 2026,
-    @DateFrom = '2026-01-01',
-    @DateTo = '2026-01-31'
-```
+**Stored Procedures** (7 total):
+
+| Stored Procedure | Tool | Agent |
+|-----------------|------|-------|
+| `usp_Chatbot_GetTicketSummary` | `get_ticket_summary` | ticket_analytics |
+| `usp_Chatbot_GetTicketTimeline` | `get_ticket_timeline` | ticket_analytics |
+| `usp_Chatbot_GetPMChecklistData` | `get_pm_checklist_data` | ticket_analytics |
+| `usp_Chatbot_GetLookups` | `get_lookups` | ticket_analytics |
+| `usp_Chatbot_GetEngineerPerformance` | `get_engineer_performance` | engineer_analytics |
+| `usp_Chatbot_GetCertificationStatus` | `get_certification_status` | engineer_analytics |
+| `usp_Chatbot_GetInventoryConsumption` | `get_inventory_consumption` | inventory_analytics |
+
+SQL scripts: `scripts/sql/usp_Chatbot_*.sql`
 
 ## Session State Management
 
@@ -284,8 +371,14 @@ EXEC usp_Chatbot_GetTicketSummary
     "region": str,                # No longer used for filtering
 
     # Tool state (ephemeral, set by tools during conversation)
-    "last_ticket_data": dict,     # Stored by get_ticket_summary() for "chart the above"
-    "last_query_context": str,    # Query context for follow-up requests
+    "last_ticket_data": dict,     # Stored by get_ticket_summary()/get_ticket_timeline()
+    "last_query_type": str,       # "ticket_summary" or "ticket_timeline"
+    "last_query_context": str,    # Human-readable query context for follow-ups
+    "last_pm_data": dict,         # Stored by get_pm_checklist_data()
+    "last_engineer_data": dict,   # Stored by get_engineer_performance()
+    "last_certification_data": dict, # Stored by get_certification_status()
+    "last_inventory_data": dict,  # Stored by get_inventory_consumption()
+    "available_lookups": dict,    # Stored by get_lookups()
 }
 ```
 
@@ -322,17 +415,26 @@ All agents use HTML output format (not markdown):
 
 | File | Purpose |
 |------|---------|
-| `main.py` | FastAPI server with SSE streaming |
-| `my_agent/agent.py` | Root agent + greeter + oip_expert |
-| `my_agent/agents/ticket_analytics.py` | Ticket analytics sub-agent |
-| `my_agent/tools/db_tools.py` | SQL Server tools |
-| `my_agent/tools/chart_tools.py` | Recharts visualization tools |
-| `my_agent/tools/rag_tool.py` | FAISS search tool |
+| `main.py` | FastAPI server with SSE streaming, chat persistence, suggestions |
+| `my_agent/agent.py` | Root agent + greeter + oip_expert definitions |
+| `my_agent/agents/ticket_analytics.py` | Ticket analytics sub-agent (13 tools) |
+| `my_agent/agents/engineer_analytics.py` | Engineer performance + daily logs sub-agent (3 tools) |
+| `my_agent/agents/inventory_analytics.py` | Inventory consumption sub-agent (2 tools) |
+| `my_agent/agents/data_visualization.py` | **DEAD CODE** — orphaned, not registered |
+| `my_agent/tools/db_tools.py` | SQL Server tools (ticket summary, timeline, PM, lookups) |
+| `my_agent/tools/engineer_tools.py` | Engineer performance + certification tools |
+| `my_agent/tools/inventory_tools.py` | Inventory consumption tools |
+| `my_agent/tools/chart_tools.py` | All Recharts visualization tools (9 chart functions) |
+| `my_agent/tools/rag_tool.py` | FAISS search tool for OIP documents |
+| `my_agent/tools/chat_history.py` | Chat persistence (ChatbotMessages/ChatbotSessions DB) |
+| `my_agent/tools/suggestions.py` | Follow-up suggestion generation (rule-based + LLM) |
 | `my_agent/rag/vector_store.py` | FAISSVectorStore class |
 | `my_agent/prompts/templates.py` | All prompt templates |
 | `my_agent/models.py` | Pydantic models (Ticket, Document, API) |
 | `my_agent/config.py` | Configuration (paths, models, RAG settings) |
 | `scripts/ingest_documents.py` | Document ingestion CLI |
+| `scripts/inspect_db.py` | DB schema inspector (dev tool) |
+| `scripts/sql/*.sql` | All stored procedure SQL scripts |
 
 ## Configuration Reference
 
@@ -596,6 +698,21 @@ Agent → calls create_ticket_status_chart()
 Returns HTML with Recharts JSON config
     ↓
 Frontend → DynamicChart parses and renders interactive chart
+```
+
+### Engineer Daily Logs Query
+```
+User: "Show daily logs for January"
+    ↓
+root_agent → routes to engineer_analytics (matches "daily logs")
+    ↓
+engineer_analytics → calls get_engineer_performance(include_activity=True, month=1, year=2026)
+    ↓
+SP returns: RS1 (engineer rows) + RS2 (summary) + RS3 (activity_log)
+    ↓
+Agent formats activity_log as HTML table (date, engineer, activity type, hours, distance)
+    ↓
+Frontend → renders HTML response
 ```
 
 ### OIP Documentation Query

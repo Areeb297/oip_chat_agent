@@ -17,6 +17,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.agents.run_config import RunConfig, StreamingMode
 from google.adk.events import Event
+from google.adk.plugins import ReflectAndRetryToolPlugin
 from google.genai import types
 
 logger = logging.getLogger("oip_chat_agent")
@@ -110,6 +111,7 @@ async def _load_history_into_session(session, session_id: str, session_service):
 
 
 from my_agent import root_agent
+from my_agent.tools.chart_guardrails import ensure_chart_delimiters
 from my_agent.tools.suggestions import generate_suggestions
 from my_agent.tools.chat_history import (
     get_user_id_by_username,
@@ -119,6 +121,7 @@ from my_agent.tools.chat_history import (
     get_sessions,
     get_session_messages,
     delete_session,
+    delete_messages_from,
 )
 
 # Initialize FastAPI app
@@ -141,11 +144,51 @@ app.add_middleware(
 # Session service to manage conversation state
 session_service = InMemorySessionService()
 
-# Runner to execute the agent
+
+# =============================================================================
+# ADK PLUGINS — Error Handling & Tool Retry (Google ADK Best Practice)
+# =============================================================================
+class OIPToolRetryPlugin(ReflectAndRetryToolPlugin):
+    """Custom retry plugin that detects errors in our tool responses.
+
+    Our tools return {"status": "error", "Message": "..."} on failure.
+    This plugin detects that pattern and triggers ADK's reflect-and-retry
+    mechanism, giving the LLM a chance to fix parameters and try again.
+
+    Also validates chart JSON output to catch malformed chart data.
+    """
+
+    async def extract_error_from_result(self, *, tool, tool_args, tool_context, result):
+        """Detect errors in tool results — triggers retry if error found."""
+        if isinstance(result, dict):
+            # Our tools return status: "error" with a Message field
+            if result.get("status") == "error":
+                error_msg = result.get("Message", result.get("error_message", "Unknown error"))
+                logger.warning(f"🔄 Tool '{tool.name}' returned error: {error_msg} — triggering retry")
+                return result
+
+        # Chart tools return HTML strings — validate chart JSON separately
+        if isinstance(result, str) and "<!--CHART_START-->" in result:
+            try:
+                chart_json_match = re.search(r'<!--CHART_START-->\s*(\{.*?\})\s*<!--CHART_END-->', result, re.DOTALL)
+                if chart_json_match:
+                    chart_data = json.loads(chart_json_match.group(1))
+                    if not chart_data.get("data"):
+                        logger.warning(f"🔄 Chart from '{tool.name}' has empty data — triggering retry")
+                        return {"error": "Chart generated with empty data array"}
+            except (json.JSONDecodeError, AttributeError):
+                logger.warning(f"🔄 Chart from '{tool.name}' has malformed JSON — triggering retry")
+                return {"error": "Chart JSON is malformed"}
+
+        return None  # No error detected — tool call succeeded
+
+
+# Runner to execute the agent with retry plugin
 runner = Runner(
     agent=root_agent,
     app_name="oip_assistant",
     session_service=session_service,
+    plugins=[OIPToolRetryPlugin(max_retries=2)],
 )
 
 
@@ -315,6 +358,15 @@ async def remove_session(session_id: str):
 
 class TitleUpdate(BaseModel):
     title: str
+
+
+@app.delete("/sessions/{session_id}/messages/from/{message_id}")
+async def remove_messages_from(session_id: str, message_id: int):
+    """Delete a message and all messages after it in a session."""
+    deleted = delete_messages_from(session_id, message_id)
+    if deleted >= 0:
+        return {"success": True, "deleted": deleted}
+    return {"success": False, "error": "Failed to delete messages"}
 
 
 @app.patch("/sessions/{session_id}/title")
@@ -514,6 +566,8 @@ async def run_sse(request: RunSSERequest):
             # ── Post-process: convert any markdown to HTML and strip filter tags ──
             raw_text = final_response_text or streamed_text
             clean_text = _md_to_html(raw_text) if raw_text else ""
+            # Layer 2 chart guardrail: re-wrap orphaned chart JSON with delimiters
+            clean_text = ensure_chart_delimiters(clean_text)
 
             # Send the complete, cleaned HTML as a final replacement event
             # so the frontend can swap out any raw streamed text
@@ -578,6 +632,8 @@ async def run_sse(request: RunSSERequest):
 
         # ── Post-process: convert markdown to HTML and strip filter tags ──
         response_text = _md_to_html(response_text)
+        # Layer 2 chart guardrail: re-wrap orphaned chart JSON with delimiters
+        response_text = ensure_chart_delimiters(response_text)
 
         # ── Persist assistant response ──
         if response_text and db_user_id is not None:

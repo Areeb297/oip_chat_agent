@@ -13,6 +13,7 @@ from google.adk.models.lite_llm import LiteLlm
 
 from ..tools.engineer_tools import get_engineer_performance, get_certification_status
 from ..tools.chart_tools import create_engineer_chart
+from ..tools.chart_guardrails import fix_chart_output
 from ..prompts.templates import Prompts
 
 
@@ -83,9 +84,23 @@ Parameters:
 - **month** (optional): Month number 1-12
 - **year** (optional): Year like 2025, 2026
 - **date_from** / **date_to** (optional): Date range in YYYY-MM-DD
-- **include_activity** (optional): Set True to get DailyActivityLog data (hours, distance, activity types)
+- **include_activity** (optional): Set True to get DailyActivityLog data (hours, distance, activity types).
+  **IMPORTANT: Set include_activity=True whenever the user asks about daily logs, daily activity, work hours, distance travelled, time tracking, field activity, or what engineers did on specific days.**
 
 Returns per-engineer rows + summary totals.
+When include_activity=True, also returns an `activity_log` list with:
+- EngineerName, ActivityType (TR/PM/Other), WorkingDate, DurationHours, DistanceTravelled, OvertimeMinutes, TicketStatus, TeamName
+
+### What are Daily Activity Logs?
+Daily activity logs are field records that engineers submit in TickTraq for each working day. They capture:
+- **What was done**: Activity type — TR (Trouble Report/reactive fix), PM (Preventive Maintenance/scheduled visit), or Other
+- **When**: The working date, start time, and end time
+- **How long**: Duration in hours (e.g., 8 hours)
+- **Travel**: Distance travelled to the site in km
+- **Overtime**: Extra minutes worked beyond normal hours
+- **Which ticket**: The ticket ID being worked on
+- **Hotel stay**: Whether the engineer stayed overnight for remote site work
+These logs help supervisors track engineer productivity, field activity, and time allocation across projects.
 
 ### 2. get_certification_status — Certification compliance
 Checks which engineers have expiring/expired certifications.
@@ -102,10 +117,19 @@ Note: The certification table may be empty. If so, explain that no certification
 Creates charts from the last get_engineer_performance() call. Call get_engineer_performance first!
 
 Parameters:
-- **metric**: "completed", "total", "completion_rate", "sla_breached", "task_type"
+- **metric**: Choose based on what the user wants to chart:
+  - **Ticket metrics**: "completed", "total", "completion_rate", "sla_breached", "task_type"
+  - **Daily log metrics** (requires include_activity=True): "activity_log", "hours", "distance"
 - **group_by**: "engineer", "team", "project"
 - **chart_type**: "bar", "pie", "donut", "gauge"
 - **title**: Descriptive chart title
+
+**CRITICAL: Choosing the right metric:**
+- If the user asks to "chart daily logs" / "chart daily activity" / "plot activity log" → use metric="activity_log"
+- If the user asks to "chart work hours" / "hours per engineer" → use metric="hours"
+- If the user asks to "chart distance" / "travel distance" → use metric="distance"
+- If the user asks to "chart tickets" / "task type breakdown" → use metric="task_type"
+- metric="task_type" charts TICKET types (from ticket data). metric="activity_log" charts DAILY LOG activity types (from DailyActivityLog data). These are DIFFERENT datasets!
 
 ## Tool Parameter Mapping
 
@@ -125,6 +149,18 @@ IMPORTANT: Only include month/year when the user mentions a specific time period
 | "Certs expiring in 30 days" | get_certification_status(expiring_within_days=30) |
 | "Chart engineer performance" | get_engineer_performance() then create_engineer_chart(metric="completed") |
 | "Task type distribution chart" | get_engineer_performance() then create_engineer_chart(metric="task_type") |
+| "Show daily logs" | get_engineer_performance(include_activity=True) |
+| "Daily activity for Areeb" | get_engineer_performance(employee_names="Areeb", include_activity=True) |
+| "Work hours by engineers" | get_engineer_performance(include_activity=True) |
+| "Distance travelled by engineers" | get_engineer_performance(include_activity=True) |
+| "What did engineers do this week?" | get_engineer_performance(include_activity=True, date_from="YYYY-MM-DD", date_to="YYYY-MM-DD") |
+| "Daily logs for January" | get_engineer_performance(include_activity=True, month=1, year={DATE_CTX['current_year']}) |
+| "Engineer time tracking" | get_engineer_performance(include_activity=True) |
+| "Field activity report" | get_engineer_performance(include_activity=True) |
+| "Chart daily logs" | get_engineer_performance(include_activity=True) then create_engineer_chart(metric="activity_log") |
+| "Plot daily activity" | get_engineer_performance(include_activity=True) then create_engineer_chart(metric="activity_log") |
+| "Chart work hours" | get_engineer_performance(include_activity=True) then create_engineer_chart(metric="hours") |
+| "Chart distance travelled" | get_engineer_performance(include_activity=True) then create_engineer_chart(metric="distance") |
 
 ## Chart Selection Rules
 
@@ -132,10 +168,14 @@ IMPORTANT: Only include month/year when the user mentions a specific time period
 |---|---|---|---|
 | "Chart tickets per engineer" | "completed" | "engineer" | "bar" |
 | "Performance by team" | "completed" | "team" | "bar" |
-| "Task type breakdown" | "task_type" | "engineer" | "stackedBar" (auto) |
+| "Ticket task type breakdown" | "task_type" | "engineer" | "stackedBar" (auto) |
 | "Completion rate gauge" | "completion_rate" | N/A | "gauge" |
 | "SLA breaches per engineer" | "sla_breached" | "engineer" | "bar" |
 | "Pie chart by project" | "total" | "project" | "pie" |
+| "Chart daily logs" | "activity_log" | "engineer" | "stackedBar" (auto) |
+| "Plot daily activity" | "activity_log" | "engineer" | "stackedBar" (auto) |
+| "Chart work hours" | "hours" | "engineer" | "bar" |
+| "Chart distance travelled" | "distance" | "engineer" | "bar" |
 
 ## CRITICAL: Time/Date Filter Rules
 
@@ -223,8 +263,14 @@ engineer_analytics = LlmAgent(
     name="engineer_analytics",
     model=AGENT_MODEL,
     instruction=ENGINEER_ANALYTICS_INSTRUCTION,
+    after_model_callback=fix_chart_output,
     description="""Handles engineer performance, productivity, ticket completion by engineer,
-activity type distributions (TR/PM/Other), and certification status. Use for:
+activity type distributions (TR/PM/Other), certification status, and daily activity logs.
+
+Daily activity logs track what engineers do each day in the field — site visits, working hours,
+distance travelled, overtime, activity type (TR/PM/Other), and which tickets were worked on.
+
+Use for:
 - "How many tickets completed by Areeb?"
 - "Tickets completed by engineers in January"
 - "Engineer performance for Central team"
@@ -234,6 +280,12 @@ activity type distributions (TR/PM/Other), and certification status. Use for:
 - "Are all engineers certified for ANB?"
 - "Chart engineer performance"
 - "Engineer productivity this month"
+- "Show daily logs" / "daily activity log"
+- "Work hours by engineer" / "hours worked"
+- "Distance travelled by engineers"
+- "What did engineers do this week?"
+- "Engineer time tracking" / "field activity report"
+- "Show activity log for January"
 """,
     tools=[
         get_engineer_performance,

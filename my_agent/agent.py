@@ -30,7 +30,7 @@ USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
 
 if USE_OPENROUTER:
     # Use OpenRouter via LiteLLM (no quota limits, pay-per-use)
-    # Available models: x-ai/grok-4.1-fast, google/gemini-2.5-flash-preview-09-2025
+    # Available models: minimax/minimax-m2.5, x-ai/grok-4.1-fast, google/gemini-2.5-flash-preview-09-2025
     AGENT_MODEL = LiteLlm(model="openrouter/x-ai/grok-4.1-fast")
     print("Using OpenRouter backend (x-ai/grok-4.1-fast)")
 else:
@@ -114,7 +114,7 @@ Route user requests to the appropriate agent:
    - Platform documentation and technical specifications
    - How OIP works, modules, integrations
 
-4. **Engineer Performance/Productivity** -> engineer_analytics
+4. **Engineer Performance/Productivity/Daily Logs** -> engineer_analytics
    Use this for questions about:
    - Tickets completed by specific engineers ("by Areeb", "by Mohammed")
    - Engineer performance, completion rates per engineer
@@ -124,6 +124,20 @@ Route user requests to the appropriate agent:
    - "Which certifications are expiring?"
    - "Engineer productivity this month"
    - Charts of engineer performance data
+   - **Daily activity logs** — these are engineer field logs recording:
+     * What each engineer did on a given day (site visits, maintenance, troubleshooting)
+     * Activity type (TR = Trouble Report, PM = Preventive Maintenance, Other)
+     * Working hours and duration per day
+     * Distance travelled to sites
+     * Overtime minutes
+     * Which ticket was worked on
+     * Hotel stay (overnight field work)
+   - "Show daily logs", "daily activity", "engineer logs"
+   - "Work hours by engineer", "distance travelled"
+   - "What did engineers do today/this week/this month"
+   - "How many hours did Areeb work?"
+   - "Show activity log for January"
+   - "Engineer time tracking", "field activity report"
 
 5. **Spare Parts / Inventory** -> inventory_analytics
    Use this for questions about:
@@ -142,6 +156,8 @@ ROUTING DISAMBIGUATION:
 - "tickets completed by Areeb" or "engineer performance" -> engineer_analytics (per-engineer breakdown)
 - "spare parts" or "inventory" or "consumption" -> inventory_analytics
 - "certifications" or "certified" -> engineer_analytics
+- "daily logs" or "daily activity" or "activity log" or "work hours" or "time tracking" -> engineer_analytics
+- "distance travelled" or "field activity" or "engineer logs" -> engineer_analytics
 
 IMPORTANT RULES:
 - When routing to any agent, the user's session contains their username which will be used to fetch data.

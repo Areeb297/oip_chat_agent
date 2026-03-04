@@ -20,6 +20,7 @@ from ..tools.chart_tools import (
     create_breakdown_chart,
     create_pm_chart,
 )
+from ..tools.chart_guardrails import fix_chart_output
 from ..prompts.templates import Prompts
 
 
@@ -642,6 +643,7 @@ ticket_analytics = LlmAgent(
     name="ticket_analytics",
     model=AGENT_MODEL,
     instruction=TICKET_ANALYTICS_INSTRUCTION,
+    after_model_callback=fix_chart_output,
     description="""Handles queries about tickets, workload, SLA status, project performance, AND data visualization.
 Use this agent for questions like:
 - "What are my tickets?"

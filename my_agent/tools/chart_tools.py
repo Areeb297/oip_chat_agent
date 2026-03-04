@@ -930,7 +930,10 @@ def create_engineer_chart(
                 - "total" — Total tickets
                 - "completion_rate" — Completion rate percentage
                 - "sla_breached" — SLA breached tickets
-                - "task_type" — Stacked bar of TR/PM/Other tickets
+                - "task_type" — Stacked bar of TR/PM/Other TICKETS (from ticket data)
+                - "activity_log" — Stacked bar of TR/PM/Other from DAILY ACTIVITY LOGS (requires include_activity=True)
+                - "hours" — Total working hours per engineer from daily logs
+                - "distance" — Total distance travelled per engineer from daily logs
         group_by: How to group data. Options:
                   - "engineer" — Per engineer (default)
                   - "team" — Aggregated by team
@@ -980,7 +983,7 @@ def create_engineer_chart(
     else:
         group_key = "EngineerName"
 
-    # Handle task_type as stacked bar
+    # Handle task_type as stacked bar (TICKET task types — TR/PM/Other from ticket data)
     if metric == "task_type":
         aggregated = defaultdict(lambda: {"TR": 0, "PM": 0, "Other": 0})
         for eng in engineers:
@@ -994,7 +997,7 @@ def create_engineer_chart(
             chart_data.append({"category": name, "TR": values["TR"], "PM": values["PM"], "Other": values["Other"]})
 
         if not title:
-            title = f"Task Type Distribution by {group_by.title()}"
+            title = f"Ticket Task Type Distribution by {group_by.title()}"
 
         return create_chart(
             data=chart_data,
@@ -1002,8 +1005,99 @@ def create_engineer_chart(
             x_key="category",
             y_keys=["TR", "PM", "Other"],
             chart_type="stackedBar",
-            description=f"Task type breakdown by {group_by} ({len(chart_data)} groups)",
+            description=f"Ticket task type breakdown by {group_by} ({len(chart_data)} groups)",
             colors=["#3b82f6", "#22c55e", "#f59e0b"],  # Blue=TR, Green=PM, Orange=Other
+        )
+
+    # Handle activity_log — daily activity log entries (NOT ticket data)
+    if metric == "activity_log":
+        activity_log = last_data.get("activity_log", [])
+        if not activity_log:
+            return ("<p><span style='color:#f59e0b'>No daily activity log data found.</span></p>"
+                    "<p>Try calling get_engineer_performance with include_activity=True first.</p>")
+
+        # Aggregate activity types by engineer
+        aggregated = defaultdict(lambda: {"TR": 0, "PM": 0, "Other": 0})
+        for entry in activity_log:
+            key = entry.get("EngineerName", "Unknown")
+            activity_type = entry.get("ActivityType") or "Other"
+            if activity_type not in ("TR", "PM"):
+                activity_type = "Other"
+            aggregated[key][activity_type] += 1
+
+        chart_data = []
+        for name, values in sorted(aggregated.items(), key=lambda x: sum(x[1].values()), reverse=True):
+            chart_data.append({"category": name, "TR": values["TR"], "PM": values["PM"], "Other": values["Other"]})
+
+        if not title:
+            title = f"Daily Activity Log Distribution by {group_by.title()}"
+
+        print(f"📊 [ACTIVITY LOG CHART] {len(chart_data)} engineers, {len(activity_log)} log entries")
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["TR", "PM", "Other"],
+            chart_type="stackedBar",
+            description=f"Daily activity log entries by {group_by} ({len(chart_data)} engineers, {len(activity_log)} total logs)",
+            colors=["#3b82f6", "#22c55e", "#f59e0b"],  # Blue=TR, Green=PM, Orange=Other
+        )
+
+    # Handle hours — total working hours per engineer from daily logs
+    if metric == "hours":
+        activity_log = last_data.get("activity_log", [])
+        if not activity_log:
+            return ("<p><span style='color:#f59e0b'>No daily activity log data found.</span></p>"
+                    "<p>Try calling get_engineer_performance with include_activity=True first.</p>")
+
+        aggregated = defaultdict(float)
+        for entry in activity_log:
+            key = entry.get("EngineerName", "Unknown")
+            aggregated[key] += float(entry.get("DurationHours", 0) or 0)
+
+        chart_data = []
+        for name, value in sorted(aggregated.items(), key=lambda x: x[1], reverse=True):
+            chart_data.append({"category": name, "value": round(value, 1)})
+
+        if not title:
+            title = "Total Working Hours by Engineer"
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["value"],
+            chart_type=chart_type,
+            description=f"Working hours from daily logs ({len(chart_data)} engineers)",
+        )
+
+    # Handle distance — total distance travelled per engineer from daily logs
+    if metric == "distance":
+        activity_log = last_data.get("activity_log", [])
+        if not activity_log:
+            return ("<p><span style='color:#f59e0b'>No daily activity log data found.</span></p>"
+                    "<p>Try calling get_engineer_performance with include_activity=True first.</p>")
+
+        aggregated = defaultdict(float)
+        for entry in activity_log:
+            key = entry.get("EngineerName", "Unknown")
+            aggregated[key] += float(entry.get("DistanceTravelled", 0) or 0)
+
+        chart_data = []
+        for name, value in sorted(aggregated.items(), key=lambda x: x[1], reverse=True):
+            chart_data.append({"category": name, "value": round(value, 1)})
+
+        if not title:
+            title = "Distance Travelled by Engineer (km)"
+
+        return create_chart(
+            data=chart_data,
+            title=title,
+            x_key="category",
+            y_keys=["value"],
+            chart_type=chart_type,
+            description=f"Distance travelled from daily logs ({len(chart_data)} engineers)",
         )
 
     # Single metric chart
