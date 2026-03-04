@@ -1,17 +1,23 @@
 """Chart output guardrails for OIP Assistant.
 
-Ensures chart JSON is always wrapped in <!--CHART_START--> / <!--CHART_END-->
-delimiters, even when the LLM strips them from tool output.
+Ensures chart JSON is always properly structured and wrapped in
+<!--CHART_START--> / <!--CHART_END--> delimiters.
 
-Two layers:
-  1. ADK after_model_callback on each chart-capable agent (Layer 1)
-  2. Post-processor in main.py as a safety net (Layer 2)
+Three validation layers:
+  1. Pydantic validation on chart tool output (via OIPToolRetryPlugin)
+     — validates structure, triggers ADK reflect-and-retry with feedback
+  2. ADK after_model_callback on each chart-capable agent (Layer 1)
+     — re-wraps delimiters if LLM strips them
+  3. Post-processor in main.py as a safety net (Layer 2)
+     — catches anything the first two layers miss
 """
 
 import json
 import logging
 import re
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, field_validator
 
 logger = logging.getLogger("oip_chat_agent")
 
@@ -109,6 +115,119 @@ def ensure_chart_delimiters(text: str) -> str:
     )
 
     return fixed_text
+
+
+# ---------------------------------------------------------------------------
+# Chart tool names — used by retry plugin and streaming buffer
+# ---------------------------------------------------------------------------
+CHART_TOOL_NAMES = {
+    "create_chart",
+    "create_chart_from_session",
+    "create_breakdown_chart",
+    "create_pm_chart",
+    "create_ticket_status_chart",
+    "create_completion_rate_gauge",
+    "create_tickets_over_time_chart",
+    "create_project_comparison_chart",
+    "create_engineer_chart",
+    "create_inventory_chart",
+}
+
+
+# ---------------------------------------------------------------------------
+# Pydantic Chart Validation
+# ---------------------------------------------------------------------------
+class ChartOutput(BaseModel):
+    """Pydantic model to validate chart JSON from chart tools.
+
+    Validates type is a known chart type and data/value is present.
+    Extra fields (title, description, config, etc.) are allowed.
+    """
+
+    type: str
+    data: Optional[List[Dict]] = None
+    value: Optional[float] = None  # For gauge charts
+
+    model_config = {"extra": "allow"}
+
+    @field_validator("type")
+    @classmethod
+    def validate_chart_type(cls, v: str) -> str:
+        if v not in KNOWN_CHART_TYPES:
+            raise ValueError(
+                f"Invalid chart type '{v}'. "
+                f"Must be one of: {', '.join(sorted(KNOWN_CHART_TYPES))}"
+            )
+        return v
+
+    @field_validator("data")
+    @classmethod
+    def validate_data_not_empty(cls, v, info):
+        chart_type = info.data.get("type", "")
+        if chart_type == "gauge":
+            return v  # Gauge uses 'value' instead of 'data'
+        if not v or len(v) == 0:
+            raise ValueError(
+                "Chart 'data' array is empty — no data points to visualize. "
+                "Ensure the data source has valid entries before charting."
+            )
+        return v
+
+
+def contains_chart_json(text: str) -> bool:
+    """Quick check whether text contains a chart JSON pattern."""
+    if not text:
+        return False
+    return bool(_CHART_TYPE_PATTERN.search(text))
+
+
+def validate_chart_output(raw_output: str) -> Tuple[bool, str]:
+    """Validate a chart tool's output using Pydantic.
+
+    Returns:
+        (is_valid, error_feedback)
+        - is_valid: True if chart output is properly structured
+        - error_feedback: Descriptive error for LLM retry (empty if valid)
+    """
+    if not raw_output or not isinstance(raw_output, str):
+        return False, "Chart tool returned empty output. Call the chart tool again."
+
+    # Must have delimiters
+    if "<!--CHART_START-->" not in raw_output:
+        return False, (
+            "Chart output is missing <!--CHART_START--> / <!--CHART_END--> delimiters. "
+            "The chart JSON MUST be wrapped in these HTML comment delimiters."
+        )
+
+    # Extract JSON between delimiters
+    match = re.search(
+        r"<!--CHART_START-->\s*(\{.*?\})\s*<!--CHART_END-->",
+        raw_output,
+        re.DOTALL,
+    )
+    if not match:
+        return False, (
+            "Could not extract valid JSON between <!--CHART_START--> and "
+            "<!--CHART_END--> delimiters. Ensure the JSON is complete and properly enclosed."
+        )
+
+    json_str = match.group(1)
+
+    # Parse JSON
+    try:
+        chart_dict = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        return False, f"Chart JSON is malformed: {e}. Fix the JSON syntax and retry."
+
+    # Validate with Pydantic
+    try:
+        ChartOutput(**chart_dict)
+    except Exception as e:
+        return False, f"Chart validation failed: {e}"
+
+    logger.debug("[CHART VALIDATE] Pydantic validation passed (type=%s, points=%d)",
+                 chart_dict.get("type"), len(chart_dict.get("data", [])))
+    return True, ""
 
 
 def fix_chart_output(callback_context, llm_response):

@@ -1190,7 +1190,8 @@ def create_chart_from_session(
         return create_completion_rate_gauge(
             completion_rate=raw_data["completion_rate"],
             target_rate=80.0,
-            title=title
+            title=title,
+            tool_context=tool_context,
         )
 
     # Build chart data from requested metrics
@@ -1232,7 +1233,8 @@ def create_chart_from_session(
         y_keys=["count"],
         chart_type=chart_type,
         description=description,
-        colors=colors
+        colors=colors,
+        tool_context=tool_context,
     )
 
     # Log first 200 chars of output to verify format

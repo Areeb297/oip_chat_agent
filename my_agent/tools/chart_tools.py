@@ -55,6 +55,14 @@ STATUS_COLORS = {
     "total": "#3b82f6",       # Blue
 }
 
+# Extended palette for pie/donut slices (16+ distinct colors)
+PIE_COLORS = [
+    "#3b82f6", "#22c55e", "#f59e0b", "#ef4444", "#8b5cf6",
+    "#06b6d4", "#ec4899", "#f97316", "#14b8a6", "#6366f1",
+    "#84cc16", "#e11d48", "#0ea5e9", "#a855f7", "#d946ef",
+    "#64748b", "#facc15", "#2dd4bf", "#fb923c", "#818cf8",
+]
+
 
 def _humanize_key(key: str) -> str:
     """Convert a CamelCase or snake_case key to a human-readable label.
@@ -265,7 +273,8 @@ def create_chart(
     description: Optional[str] = None,
     y_labels: Optional[List[str]] = None,
     colors: Optional[List[str]] = None,
-    figure_number: int = 1
+    figure_number: int = 1,
+    tool_context=None,
 ) -> str:
     """
     Create a Recharts-compatible chart configuration with intelligent chart selection.
@@ -368,6 +377,9 @@ def create_chart(
         config["labelType"] = "percentage"
         # Position legend to the right to avoid overlapping with slice labels
         config["styling"]["legendPosition"] = "right"
+        # Assign distinct colors to each slice
+        for i, point in enumerate(config["data"]):
+            point["color"] = PIE_COLORS[i % len(PIE_COLORS)]
     elif chart_type == ChartType.DONUT.value:
         # Donut chart - ring with hollow center
         config["type"] = "donut"
@@ -377,6 +389,9 @@ def create_chart(
         config["labelType"] = "percentage"
         # Position legend to the right to avoid overlapping with slice labels
         config["styling"]["legendPosition"] = "right"
+        # Assign distinct colors to each slice
+        for i, point in enumerate(config["data"]):
+            point["color"] = PIE_COLORS[i % len(PIE_COLORS)]
     elif chart_type == ChartType.GAUGE.value and data:
         value = data[0].get(y_keys[0], 0) if data else 0
         config["value"] = value
@@ -391,6 +406,15 @@ def create_chart(
     chart_json = json.dumps(config, indent=2)
     print(f"📊 [CHART CONFIG] type={chart_type}, series={[s['key'] for s in series]}, data_points={len(data)}")
     print(f"📊 [CHART JSON preview] {chart_json[:500]}")
+
+    # Store chart JSON in session state for post-processor injection.
+    # This bypasses the LLM output token limit — the post-processor
+    # reads this directly and injects it with <!--CHART_START--> delimiters.
+    if tool_context is not None:
+        try:
+            tool_context.state["last_chart_output"] = chart_json
+        except Exception:
+            pass  # Non-critical — post-processor has fallback
 
     # Build insights HTML
     insights_html = ""
@@ -416,7 +440,8 @@ def create_ticket_status_chart(
     suspended_tickets: int,
     pending_approval: int = 0,
     sla_breached: int = 0,
-    title: str = "Ticket Status Distribution"
+    title: str = "Ticket Status Distribution",
+    tool_context=None,
 ) -> str:
     """
     Create a ticket status distribution chart (pie chart).
@@ -467,7 +492,8 @@ def create_ticket_status_chart(
         y_keys=["count"],
         chart_type="donut",
         description="Distribution of tickets by current status",
-        colors=[d["color"] for d in data]
+        colors=[d["color"] for d in data],
+        tool_context=tool_context,
     )
 
     # Add SLA breach warning if applicable
@@ -480,7 +506,8 @@ def create_ticket_status_chart(
 def create_completion_rate_gauge(
     completion_rate: float,
     target_rate: float = 80.0,
-    title: str = "Completion Rate"
+    title: str = "Completion Rate",
+    tool_context=None,
 ) -> str:
     """
     Create a completion rate gauge chart.
@@ -536,6 +563,13 @@ def create_completion_rate_gauge(
     }
 
     chart_json = json.dumps(config, indent=2)
+
+    # Store in session for post-processor injection
+    if tool_context is not None:
+        try:
+            tool_context.state["last_chart_output"] = chart_json
+        except Exception:
+            pass
 
     # Build insights HTML
     insights_html = f"""<ul>
@@ -613,7 +647,8 @@ def create_tickets_over_time_chart(
         chart_type=chart_type,
         description="Trend of {} over time".format(
             ", ".join(_humanize_key(k) for k in value_keys)
-        )
+        ),
+        tool_context=tool_context,
     )
 
 
@@ -621,7 +656,8 @@ def create_project_comparison_chart(
     data: List[Dict[str, Any]],
     project_key: str = "project",
     value_keys: List[str] = None,
-    title: str = "Project Comparison"
+    title: str = "Project Comparison",
+    tool_context=None,
 ) -> str:
     """
     Create a bar chart comparing metrics across projects.
@@ -686,7 +722,8 @@ def create_project_comparison_chart(
         description="Comparison of {} across projects".format(
             ", ".join(_humanize_key(k) for k in value_keys)
         ),
-        colors=colors
+        colors=colors,
+        tool_context=tool_context,
     )
 
 
@@ -791,7 +828,8 @@ def create_breakdown_chart(
         x_key="category",
         y_keys=["value"],
         chart_type=chart_type,
-        description=f"{title} ({len(chart_data)} items)"
+        description=f"{title} ({len(chart_data)} items)",
+        tool_context=tool_context,
     )
 
 
@@ -866,6 +904,7 @@ def create_pm_chart(
             y_keys=["count"],
             chart_type=chart_type,
             description=f"Equipment quantity per site ({len(chart_data)} sites)",
+            tool_context=tool_context,
         )
 
     elif metric == "count_by_value" and query_mode == "extension":
@@ -882,6 +921,7 @@ def create_pm_chart(
             y_keys=["count"],
             chart_type=chart_type if chart_type in ("pie", "donut") else "pie",
             description=f"Distribution of values ({len(chart_data)} distinct values)",
+            tool_context=tool_context,
         )
 
     else:
@@ -908,6 +948,7 @@ def create_pm_chart(
             y_keys=["count"],
             chart_type=chart_type,
             description=f"Count by {_humanize_key(key_field)} ({len(chart_data)} groups)",
+            tool_context=tool_context,
         )
 
 
@@ -1007,6 +1048,7 @@ def create_engineer_chart(
             chart_type="stackedBar",
             description=f"Ticket task type breakdown by {group_by} ({len(chart_data)} groups)",
             colors=["#3b82f6", "#22c55e", "#f59e0b"],  # Blue=TR, Green=PM, Orange=Other
+            tool_context=tool_context,
         )
 
     # Handle activity_log — daily activity log entries (NOT ticket data)
@@ -1042,6 +1084,7 @@ def create_engineer_chart(
             chart_type="stackedBar",
             description=f"Daily activity log entries by {group_by} ({len(chart_data)} engineers, {len(activity_log)} total logs)",
             colors=["#3b82f6", "#22c55e", "#f59e0b"],  # Blue=TR, Green=PM, Orange=Other
+            tool_context=tool_context,
         )
 
     # Handle hours — total working hours per engineer from daily logs
@@ -1070,6 +1113,7 @@ def create_engineer_chart(
             y_keys=["value"],
             chart_type=chart_type,
             description=f"Working hours from daily logs ({len(chart_data)} engineers)",
+            tool_context=tool_context,
         )
 
     # Handle distance — total distance travelled per engineer from daily logs
@@ -1098,6 +1142,7 @@ def create_engineer_chart(
             y_keys=["value"],
             chart_type=chart_type,
             description=f"Distance travelled from daily logs ({len(chart_data)} engineers)",
+            tool_context=tool_context,
         )
 
     # Single metric chart
@@ -1137,7 +1182,7 @@ def create_engineer_chart(
     if chart_type == "gauge" and metric == "completion_rate":
         summary = last_data.get("summary", {})
         rate = summary.get("OverallCompletionRate", 0)
-        return create_completion_rate_gauge(float(rate), title=title)
+        return create_completion_rate_gauge(float(rate), title=title, tool_context=tool_context)
 
     return create_chart(
         data=chart_data,
@@ -1146,6 +1191,7 @@ def create_engineer_chart(
         y_keys=["value"],
         chart_type=chart_type,
         description=f"{title} ({len(chart_data)} items)",
+        tool_context=tool_context,
     )
 
 
@@ -1238,6 +1284,7 @@ def create_inventory_chart(
         y_keys=["value"],
         chart_type=chart_type,
         description=f"{title} ({len(chart_data)} items)",
+        tool_context=tool_context,
     )
 
 

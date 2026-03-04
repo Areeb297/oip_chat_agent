@@ -64,11 +64,46 @@ _OIP_EXPERT_SUGGESTIONS = [
     "What are my open tickets?",
 ]
 
+_ENGINEER_SUGGESTIONS = [
+    "Chart daily activity logs",
+    "Show work hours by engineer",
+    "Which certifications are expiring?",
+    "Show engineer performance by team",
+]
+
+_ENGINEER_CHART_SUGGESTIONS = [
+    "Show a different metric",
+    "Compare engineers by completion rate",
+    "Show daily logs breakdown",
+    "Which certifications are expiring?",
+]
+
+_ENGINEER_ACTIVITY_SUGGESTIONS = [
+    "Chart the daily activity logs",
+    "Show total hours per engineer",
+    "Distance travelled by engineers",
+    "Show ticket performance too",
+]
+
+_INVENTORY_SUGGESTIONS = [
+    "Chart consumption by site",
+    "Which parts consumed the most?",
+    "Show consumption by category",
+    "Parts returned this month",
+]
+
+_INVENTORY_CHART_SUGGESTIONS = [
+    "Show a pie chart instead",
+    "Break down by category",
+    "Show consumption by project",
+    "Compare to last month",
+]
+
 _GENERIC_SUGGESTIONS = [
     "What are my open tickets?",
-    "Show me my SLA status",
+    "Show engineer daily logs",
     "What is the OIP platform?",
-    "Compare my projects",
+    "Check spare parts consumption",
 ]
 
 
@@ -118,6 +153,23 @@ def _get_rule_based_suggestions(
 
         return suggestions[:4]
 
+    if agent_name == "engineer_analytics":
+        has_chart = "<!--CHART_START-->" in (agent_response or "")
+        has_activity = "activity" in (agent_response or "").lower() or "daily log" in (agent_response or "").lower()
+
+        if has_chart:
+            return list(_ENGINEER_CHART_SUGGESTIONS)
+        elif has_activity:
+            return list(_ENGINEER_ACTIVITY_SUGGESTIONS)
+        else:
+            return list(_ENGINEER_SUGGESTIONS)
+
+    if agent_name == "inventory_analytics":
+        has_chart = "<!--CHART_START-->" in (agent_response or "")
+        if has_chart:
+            return list(_INVENTORY_CHART_SUGGESTIONS)
+        return list(_INVENTORY_SUGGESTIONS)
+
     return list(_GENERIC_SUGGESTIONS)
 
 
@@ -140,8 +192,19 @@ async def _generate_suggestions_llm(
         if not SuggestionsConfig.USE_LLM:
             return None
 
+        # Agent scope descriptions for context
+        agent_scope = {
+            "greeter": "Greets users. Can direct to ticket queries, engineer data, inventory, or OIP docs.",
+            "ticket_analytics": "Ticket status, SLA, workload, completion rates, breakdowns by project/team/region, PM checklists, charts.",
+            "engineer_analytics": "Engineer performance, daily activity logs (hours, distance, activity types), certifications, engineer charts.",
+            "inventory_analytics": "Spare parts consumption, parts per site/category/project, inventory charts.",
+            "oip_expert": "OIP platform documentation, how-to guides, system modules, workflows.",
+        }
+
         # Build user context snippet
         context_parts = [f"Agent: {agent_name}"]
+        scope = agent_scope.get(agent_name, "General OIP assistant")
+        context_parts.append(f"Scope: {scope}")
         if session_state:
             projects = session_state.get("projectCode", "")
             if projects:
@@ -152,8 +215,8 @@ async def _generate_suggestions_llm(
         context_line = " | ".join(context_parts)
 
         user_prompt = (
-            f"User question: {user_message[:200]}\n"
-            f"Assistant response: {agent_response[:300]}\n"
+            f"User question: {user_message[:300]}\n"
+            f"Assistant response (excerpt): {agent_response[:500]}\n"
             f"Context: {context_line}"
         )
 

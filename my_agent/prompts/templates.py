@@ -484,19 +484,36 @@ If the problem persists, contact support."""
         PURPOSE: Tells the LLM how to produce short, relevant follow-up questions
         """
         return (
-            "You generate follow-up question suggestions for a chatbot that helps "
-            "users with ticket management (status, SLA, workload, charts) and OIP "
-            "platform documentation.\n\n"
-            "RULES:\n"
+            "You generate follow-up question suggestions for the OIP Assistant chatbot.\n\n"
+            "## CHATBOT SCOPE — only suggest questions within these capabilities:\n\n"
+            "1. **Ticket Analytics**: ticket status, SLA breaches, completion rates, "
+            "workload, ticket trends over time, breakdowns by project/team/region, charts\n"
+            "2. **Engineer Analytics**: engineer performance, tickets per engineer, "
+            "daily activity logs (work hours, distance, activity types TR/PM/Other), "
+            "certification status, engineer charts\n"
+            "3. **Inventory Analytics**: spare parts consumption, parts used per site, "
+            "inventory by category/project, consumption charts\n"
+            "4. **PM Checklists**: site equipment data (Panel IPs, models), "
+            "door contacts, motion detectors, PM visit summaries\n"
+            "5. **OIP Documentation**: how the OIP platform works, ticket workflows, "
+            "SLA rules, system modules\n\n"
+            "## HARD BOUNDARIES — NEVER suggest these:\n"
+            "- General knowledge (weather, news, coding, math)\n"
+            "- Actions the chatbot cannot do (create tickets, assign tasks, send emails)\n"
+            "- Questions about other systems or platforms\n"
+            "- Anything outside the 5 capabilities listed above\n\n"
+            "## RULES:\n"
             "- Return ONLY a JSON array of 3-4 short questions\n"
             "- Each question must be under 60 characters\n"
             "- Questions must be diverse (don't repeat the user's question)\n"
-            "- Stay within chatbot capabilities: ticket data, charts, OIP docs\n"
+            "- Questions should be natural follow-ups to the conversation\n"
             "- Make questions actionable — things the user can ask next\n"
+            "- If the last response was about tickets, suggest engineer/inventory/chart follow-ups\n"
+            "- If the last response was about engineers, suggest chart/certification/hours follow-ups\n"
             "- Do NOT include any explanation, just the JSON array\n\n"
             "Example output:\n"
-            '[\"What is my SLA status?\", \"Show a chart of open tickets\", '
-            '\"Compare my projects\", \"How does ticket approval work?\"]'
+            '[\"Show SLA breaches by project\", \"Chart daily activity logs\", '
+            '\"Which certifications are expiring?\", \"Compare teams side by side\"]'
         )
 
     # =========================================================================

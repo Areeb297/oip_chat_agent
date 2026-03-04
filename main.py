@@ -27,6 +27,17 @@ def _md_to_html(text: str) -> str:
     """Convert common markdown patterns to HTML so the frontend always gets clean HTML."""
     if not text:
         return text
+
+    # Protect <!--CHART_START-->...<!--CHART_END--> blocks from markdown transforms
+    # (the italic regex would corrupt * inside JSON strings like "14*10GE")
+    _CHART_PH = "\x00__CHART__\x00"
+    chart_block = ""
+    if "<!--CHART_START-->" in text and "<!--CHART_END-->" in text:
+        s = text.index("<!--CHART_START-->")
+        e = text.index("<!--CHART_END-->") + len("<!--CHART_END-->")
+        chart_block = text[s:e]
+        text = text[:s] + _CHART_PH + text[e:]
+
     # Strip any leaked filter tags from responses
     text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
     # Remove markdown headers (## Heading → <strong>Heading</strong>)
@@ -36,7 +47,67 @@ def _md_to_html(text: str) -> str:
     text = re.sub(r'__(.+?)__', r'<strong>\1</strong>', text)
     # Italic: *text* or _text_ → <em>text</em>  (but not inside HTML tags)
     text = re.sub(r'(?<![<\w])[\*](.+?)[\*](?![>])', r'<em>\1</em>', text)
+
+    # Restore chart block
+    if chart_block:
+        text = text.replace(_CHART_PH, chart_block)
+
     return text.strip()
+
+
+# Regex for chart JSON pattern (imported from guardrails but kept local for speed)
+_CHART_JSON_RE = re.compile(
+    r'\{\s*"type"\s*:\s*"(?:bar|pie|donut|line|area|stackedBar|groupedBar|gauge|radialBar)"'
+)
+
+
+def _strip_chart_json_from_text(text: str) -> str:
+    """Remove chart JSON (complete or truncated) from LLM response text.
+
+    When a chart tool stores its JSON in session state, the LLM's attempt
+    to reproduce the JSON is redundant (and often truncated for large charts).
+    This strips it so the post-processor can inject the authoritative copy.
+    """
+    if not text:
+        return text
+
+    # First remove any complete chart blocks with delimiters
+    text = re.sub(r'<!--CHART_START-->.*?<!--CHART_END-->', '', text, flags=re.DOTALL)
+
+    # Then remove orphaned chart JSON (complete or truncated)
+    match = _CHART_JSON_RE.search(text)
+    if not match:
+        return text.strip()
+
+    start_idx = match.start()
+
+    # Try to find the closing brace (complete JSON)
+    depth = 0
+    in_str = False
+    esc = False
+    for i in range(start_idx, len(text)):
+        c = text[i]
+        if esc:
+            esc = False
+            continue
+        if c == '\\' and in_str:
+            esc = True
+            continue
+        if c == '"' and not esc:
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                # Complete JSON found — remove it
+                return (text[:start_idx] + text[i + 1:]).strip()
+
+    # Truncated JSON (unbalanced braces) — remove from start to end
+    return text[:start_idx].strip()
 
 
 async def _generate_session_title(session_id: str, user_msg: str, assistant_msg: str):
@@ -111,7 +182,12 @@ async def _load_history_into_session(session, session_id: str, session_service):
 
 
 from my_agent import root_agent
-from my_agent.tools.chart_guardrails import ensure_chart_delimiters
+from my_agent.tools.chart_guardrails import (
+    ensure_chart_delimiters,
+    validate_chart_output,
+    contains_chart_json,
+    CHART_TOOL_NAMES,
+)
 from my_agent.tools.suggestions import generate_suggestions
 from my_agent.tools.chat_history import (
     get_user_id_by_username,
@@ -149,38 +225,34 @@ session_service = InMemorySessionService()
 # ADK PLUGINS — Error Handling & Tool Retry (Google ADK Best Practice)
 # =============================================================================
 class OIPToolRetryPlugin(ReflectAndRetryToolPlugin):
-    """Custom retry plugin that detects errors in our tool responses.
+    """Custom retry plugin with Pydantic-powered validation.
 
-    Our tools return {"status": "error", "Message": "..."} on failure.
-    This plugin detects that pattern and triggers ADK's reflect-and-retry
-    mechanism, giving the LLM a chance to fix parameters and try again.
+    Two types of validation:
+    1. DB tools: detect {"status": "error"} pattern → retry with error feedback
+    2. Chart tools: Pydantic validation of chart JSON structure → retry with
+       descriptive feedback so the LLM can fix its parameters
 
-    Also validates chart JSON output to catch malformed chart data.
+    On error detection, ADK feeds the error back to the LLM with guidance
+    to reflect and retry — this is the agentic feedback loop.
     """
 
     async def extract_error_from_result(self, *, tool, tool_args, tool_context, result):
-        """Detect errors in tool results — triggers retry if error found."""
+        """Validate tool output — returns error dict to trigger retry, None if valid."""
+        # DB tools return dicts with status field
         if isinstance(result, dict):
-            # Our tools return status: "error" with a Message field
             if result.get("status") == "error":
                 error_msg = result.get("Message", result.get("error_message", "Unknown error"))
-                logger.warning(f"🔄 Tool '{tool.name}' returned error: {error_msg} — triggering retry")
+                logger.warning("[RETRY] Tool '%s' error: %s", tool.name, error_msg)
                 return result
 
-        # Chart tools return HTML strings — validate chart JSON separately
-        if isinstance(result, str) and "<!--CHART_START-->" in result:
-            try:
-                chart_json_match = re.search(r'<!--CHART_START-->\s*(\{.*?\})\s*<!--CHART_END-->', result, re.DOTALL)
-                if chart_json_match:
-                    chart_data = json.loads(chart_json_match.group(1))
-                    if not chart_data.get("data"):
-                        logger.warning(f"🔄 Chart from '{tool.name}' has empty data — triggering retry")
-                        return {"error": "Chart generated with empty data array"}
-            except (json.JSONDecodeError, AttributeError):
-                logger.warning(f"🔄 Chart from '{tool.name}' has malformed JSON — triggering retry")
-                return {"error": "Chart JSON is malformed"}
+        # Chart tools return HTML strings — validate with Pydantic
+        if isinstance(result, str) and tool.name in CHART_TOOL_NAMES:
+            is_valid, error_feedback = validate_chart_output(result)
+            if not is_valid:
+                logger.warning("[RETRY] Chart validation failed for '%s': %s", tool.name, error_feedback)
+                return {"error": error_feedback}
 
-        return None  # No error detected — tool call succeeded
+        return None  # Tool output is valid
 
 
 # Runner to execute the agent with retry plugin
@@ -493,6 +565,8 @@ async def run_sse(request: RunSSERequest):
 
             last_agent = None
             last_tool = None
+            chart_tool_called = False  # When True, buffer text instead of streaming
+            captured_chart_html = ""  # Chart tool output captured from function_response
             streamed_text = ""       # text already sent to client via partial chunks
             final_response_text = "" # complete text from the final event (for DB)
 
@@ -502,6 +576,22 @@ async def run_sse(request: RunSSERequest):
                 new_message=user_content,
                 run_config=RunConfig(streaming_mode=stream_mode),
             ):
+                # ── DIAGNOSTIC: log every event's structure ──
+                _diag_parts = []
+                if hasattr(event, 'content') and event.content and getattr(event.content, 'parts', None):
+                    for _dp in event.content.parts:
+                        if hasattr(_dp, 'function_call') and _dp.function_call:
+                            _diag_parts.append(f"fn_call:{getattr(_dp.function_call, 'name', '?')}")
+                        elif hasattr(_dp, 'function_response') and _dp.function_response:
+                            _diag_parts.append(f"fn_resp:{getattr(_dp.function_response, 'name', '?')}")
+                        elif getattr(_dp, 'thought', False):
+                            _diag_parts.append("thought")
+                        elif hasattr(_dp, 'text') and _dp.text:
+                            _diag_parts.append(f"text({len(_dp.text)})")
+                        else:
+                            _diag_parts.append(type(_dp).__name__)
+                print(f"[EVENT] author={getattr(event, 'author', '?')} partial={getattr(event, 'partial', False)} final={event.is_final_response() if hasattr(event, 'is_final_response') else '?'} parts=[{', '.join(_diag_parts) if _diag_parts else 'none'}]")
+
                 # Track agent transfers for status updates
                 if hasattr(event, 'author') and event.author:
                     agent_name = event.author
@@ -523,20 +613,61 @@ async def run_sse(request: RunSSERequest):
                             tool_name = part.function_call.name
                             if tool_name != last_tool:
                                 last_tool = tool_name
+                                # Detect chart tool calls — switch to buffered mode
+                                if tool_name in CHART_TOOL_NAMES:
+                                    chart_tool_called = True
+                                    print(f"[STREAM] Chart tool '{tool_name}' detected via function_call — buffering response")
                                 tool_status_map = {
                                     "search_oip_documents": "Searching documentation...",
                                     "get_ticket_summary": "Fetching your tickets...",
+                                    "get_ticket_timeline": "Fetching ticket timeline...",
+                                    "get_pm_checklist_data": "Loading PM checklist data...",
                                     "get_current_date": "Getting date info...",
+                                    "get_lookups": "Loading reference data...",
+                                    "get_engineer_performance": "Fetching engineer data...",
+                                    "get_certification_status": "Checking certifications...",
+                                    "get_inventory_consumption": "Fetching inventory data...",
                                     "create_chart_from_session": "Generating visualization...",
                                     "create_chart": "Creating chart...",
                                     "create_ticket_status_chart": "Building status chart...",
                                     "create_completion_rate_gauge": "Creating completion gauge...",
                                     "create_tickets_over_time_chart": "Plotting trend chart...",
                                     "create_project_comparison_chart": "Building comparison chart...",
+                                    "create_breakdown_chart": "Building breakdown chart...",
+                                    "create_pm_chart": "Creating PM chart...",
+                                    "create_engineer_chart": "Creating engineer chart...",
+                                    "create_inventory_chart": "Creating inventory chart...",
                                 }
                                 status = tool_status_map.get(tool_name, "Processing...")
                                 logger.debug("[TOOL CALL] %s -> %s", tool_name, status)
                                 yield f"data: {json.dumps({'status': status})}\n\n"
+
+                        # ── Capture chart tool output from function_response ──
+                        if hasattr(part, 'function_response') and part.function_response:
+                            resp_name = getattr(part.function_response, 'name', '')
+                            if resp_name in CHART_TOOL_NAMES:
+                                resp_data = getattr(part.function_response, 'response', None)
+                                # ADK wraps string returns as {"result": str}
+                                resp_text = ""
+                                if isinstance(resp_data, dict):
+                                    # Check 'result' key (ADK's wrapping for string returns)
+                                    for key in ('result', 'output', 'response'):
+                                        val = resp_data.get(key, '')
+                                        if isinstance(val, str) and '<!--CHART_START-->' in val:
+                                            resp_text = val
+                                            break
+                                    # If not found in known keys, check all string values
+                                    if not resp_text:
+                                        for val in resp_data.values():
+                                            if isinstance(val, str) and '<!--CHART_START-->' in val:
+                                                resp_text = val
+                                                break
+                                elif isinstance(resp_data, str):
+                                    resp_text = resp_data
+                                if "<!--CHART_START-->" in resp_text:
+                                    captured_chart_html = resp_text
+                                    chart_tool_called = True  # Ensure buffering is active
+                                    print(f"[STREAM] Captured chart HTML from function_response of '{resp_name}' (len={len(captured_chart_html)})")
 
                 # ── Stream partial text chunks as they arrive ──
                 if getattr(event, 'partial', False):
@@ -547,7 +678,16 @@ async def run_sse(request: RunSSERequest):
                                 continue
                             if hasattr(part, "text") and part.text:
                                 streamed_text += part.text
-                                yield f"data: {json.dumps({'text': part.text})}\n\n"
+                                if not chart_tool_called:
+                                    # Detect chart JSON in the accumulated text.
+                                    # Once detected, stop streaming raw text — the
+                                    # final 'html' event will deliver the processed
+                                    # response with proper chart delimiters.
+                                    if contains_chart_json(streamed_text):
+                                        chart_tool_called = True
+                                        print("[STREAM] Chart JSON detected in text — buffering remainder")
+                                    else:
+                                        yield f"data: {json.dumps({'text': part.text})}\n\n"
 
                 # ── Final response: only send if we haven't streamed partials ──
                 elif event.is_final_response():
@@ -561,22 +701,89 @@ async def run_sse(request: RunSSERequest):
                                 # Only send to client if no partial chunks were streamed
                                 # (avoids duplicate text)
                                 if not streamed_text:
-                                    yield f"data: {json.dumps({'text': part.text})}\n\n"
+                                    # Skip raw text event if it contains chart JSON —
+                                    # the post-processed 'html' event will handle it
+                                    if contains_chart_json(part.text):
+                                        print("[STREAM] Chart JSON in final response — sending only via html event")
+                                    else:
+                                        yield f"data: {json.dumps({'text': part.text})}\n\n"
 
-            # ── Post-process: convert any markdown to HTML and strip filter tags ──
+            # ── Post-process: convert markdown to HTML, inject chart from session ──
             raw_text = final_response_text or streamed_text
-            clean_text = _md_to_html(raw_text) if raw_text else ""
-            # Layer 2 chart guardrail: re-wrap orphaned chart JSON with delimiters
-            clean_text = ensure_chart_delimiters(clean_text)
+            print(f"[POST-PROC] chart_tool_called={chart_tool_called}, captured_chart_html={len(captured_chart_html)}chars, streamed={len(streamed_text)}chars, final={len(final_response_text)}chars")
 
-            # Send the complete, cleaned HTML as a final replacement event
-            # so the frontend can swap out any raw streamed text
-            if clean_text:
-                yield f"data: {json.dumps({'html': clean_text})}\n\n"
+            # Fetch session state ONCE — used for chart injection and suggestions
+            try:
+                current_session = await session_service.get_session(
+                    app_name="oip_assistant",
+                    user_id=user_id,
+                    session_id=session_id,
+                )
+                s_state = dict(current_session.state) if current_session and current_session.state else {}
+            except Exception:
+                s_state = {}
+
+            # ── Chart injection: extract chart JSON separately ──
+            # Chart config is sent as a separate SSE field ("chartConfig")
+            # so the frontend never needs to parse it from innerHTML
+            chart_config_str = ""  # Compact JSON string for the chart
+
+            if captured_chart_html and chart_tool_called:
+                # Primary: captured from function_response event stream
+                print(f"[CHART INJECT] Using captured function_response chart (len={len(captured_chart_html)})")
+                _cm = re.search(r'<!--CHART_START-->\s*(.*?)\s*<!--CHART_END-->', captured_chart_html, re.DOTALL)
+                if _cm:
+                    try:
+                        _chart_obj = json.loads(_cm.group(1))
+                        chart_config_str = json.dumps(_chart_obj, separators=(',', ':'))
+                    except Exception:
+                        chart_config_str = _cm.group(1).replace('\n', ' ')
+                    print(f"[CHART INJECT] Extracted chart config ({len(chart_config_str)} chars)")
+                if raw_text:
+                    before_len = len(raw_text)
+                    raw_text = _strip_chart_json_from_text(raw_text)
+                    print(f"[STRIP] raw_text {before_len} -> {len(raw_text)} chars")
+            elif chart_tool_called:
+                # Fallback: try session state
+                stored_chart_json = s_state.get("last_chart_output")
+                if stored_chart_json:
+                    print(f"[CHART INJECT] Fallback: session state (len={len(stored_chart_json)})")
+                    try:
+                        _chart_obj = json.loads(stored_chart_json)
+                        chart_config_str = json.dumps(_chart_obj, separators=(',', ':'))
+                    except Exception:
+                        chart_config_str = stored_chart_json.replace('\n', ' ')
+                    print(f"[CHART INJECT] Extracted chart config ({len(chart_config_str)} chars)")
+                    if raw_text:
+                        raw_text = _strip_chart_json_from_text(raw_text)
+
+            if raw_text:
+                # If no chart was extracted, try wrapping orphaned chart JSON
+                # BEFORE _md_to_html() — HTML conversion corrupts * in JSON
+                if not chart_config_str:
+                    raw_text = ensure_chart_delimiters(raw_text)
+                clean_text = _md_to_html(raw_text)
+            else:
+                clean_text = ""
+
+            # Send HTML + chartConfig as separate fields in the SSE event
+            # chartConfig bypasses innerHTML entirely — no parsing needed
+            if clean_text or chart_config_str:
+                event_data = {}
+                if clean_text:
+                    event_data['html'] = clean_text
+                if chart_config_str:
+                    event_data['chartConfig'] = chart_config_str
+                print(f"[SSE EVENT] html={len(clean_text)}chars, chartConfig={len(chart_config_str)}chars")
+                yield f"data: {json.dumps(event_data)}\n\n"
 
             # ── Persist the clean assistant response ──
-            if clean_text and db_user_id is not None:
-                save_message(session_id, "assistant", clean_text)
+            # For DB, embed chart with delimiters so old sessions can still render
+            db_content = clean_text
+            if chart_config_str:
+                db_content += f"<!--CHART_START-->{chart_config_str}<!--CHART_END-->"
+            if db_content and db_user_id is not None:
+                save_message(session_id, "assistant", db_content)
                 # Update session title based on latest exchange (background)
                 asyncio.create_task(
                     _generate_session_title(session_id, raw_user_text, clean_text)
@@ -584,13 +791,6 @@ async def run_sse(request: RunSSERequest):
 
             # ── Generate follow-up suggestions (non-blocking) ──
             try:
-                # Fetch current session state for context
-                current_session = await session_service.get_session(
-                    app_name="oip_assistant",
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                s_state = dict(current_session.state) if current_session and current_session.state else {}
                 suggestions = await generate_suggestions(
                     user_message=raw_user_text,
                     agent_response=raw_text or "",
