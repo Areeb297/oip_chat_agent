@@ -89,7 +89,7 @@ node_modules/
 docs/*.md
 
 # SQL scripts (stored procedures - run manually in SSMS)
-scripts/sql/
+
 
 # Course/Reference materials
 Agentic Workflows - I.txt
