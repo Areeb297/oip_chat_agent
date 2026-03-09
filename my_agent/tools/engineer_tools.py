@@ -30,6 +30,7 @@ def get_engineer_performance(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     include_activity: bool = False,
+    role_names: Optional[str] = None,
     tool_context: "ToolContext" = None,
 ) -> dict:
     """
@@ -37,6 +38,10 @@ def get_engineer_performance(
 
     Use this tool when users ask about engineer productivity, tickets completed by specific engineers,
     task type distributions (TR/PM/Other), or team performance at the engineer level.
+
+    IMPORTANT: By default (role_names=None), this tool returns ALL employees with tickets — no role filter.
+    For engineer performance queries, the agent should pass role_names="Field Engineer,Resident Engineer"
+    to focus on field-level staff. For supervisor or admin performance, pass the appropriate role.
 
     Args:
         employee_names: Filter by engineer name(s). Optional.
@@ -54,6 +59,12 @@ def get_engineer_performance(
         date_to: End date in YYYY-MM-DD format. Optional.
         include_activity: If True, includes DailyActivityLog breakdown (activity types, hours, distance).
                           Use for "activity type distributions", "how many hours worked".
+        role_names: Filter by employee role(s). Optional.
+                    - None (default): Only "Field Engineer" and "Resident Engineer"
+                    - "All": No role filter, includes everyone (Admin, Supervisor, PM, etc.)
+                    - Comma-separated: "Field Engineer,Supervisor" for specific roles
+                    Available roles: Field Engineer, Resident Engineer, Supervisor, Administrator,
+                    Project Manager, Project Coordinator, Operations Manager, Logistics Supervisor
 
     Returns:
         dict containing:
@@ -69,6 +80,8 @@ def get_engineer_performance(
         - "Central team engineer stats" -> team_names="Central"
         - "Activity type distributions" -> include_activity=True
         - "Tickets completed by teams in January" -> month=1, year=2026
+        - "Show all roles performance" -> role_names="All"
+        - "Supervisor performance" -> role_names="Supervisor"
     """
     try:
         # Get username from session
@@ -118,6 +131,9 @@ def get_engineer_performance(
         if include_activity:
             params.append(1)
             param_markers.append('@IncludeActivity=?')
+        if role_names:
+            params.append(role_names)
+            param_markers.append('@RoleNames=?')
 
         sql = f"EXEC usp_Chatbot_GetEngineerPerformance {', '.join(param_markers)}"
         logger.info(f"🔄 Executing: {sql}")

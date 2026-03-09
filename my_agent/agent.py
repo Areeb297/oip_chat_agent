@@ -13,12 +13,14 @@ Set USE_OPENROUTER=true in .env to use OpenRouter instead of Google.
 import os
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools.agent_tool import AgentTool
 
 from .prompts.templates import Prompts
 from .tools.rag_tool import search_oip_documents
 from .agents.ticket_analytics import ticket_analytics
 from .agents.engineer_analytics import engineer_analytics
 from .agents.inventory_analytics import inventory_analytics
+from .agents.report_generator import report_generator
 
 
 # =============================================================================
@@ -149,7 +151,34 @@ Route user requests to the appropriate agent:
    - "Which parts consumed most?"
    - Inventory charts and reports
 
-6. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
+6. **Report Generation** -> Call the report_generator tool
+   IMPORTANT: When the user asks to generate, create, build, download, or print a REPORT,
+   you MUST call the report_generator tool. Do NOT route to ticket_analytics for report requests.
+
+   Trigger words: "generate report", "create report", "build report", "download report",
+   "print report", "project report", "performance report", "inventory report"
+
+   Examples that MUST go to report_generator tool:
+   - "Generate a report for ANB"
+   - "Create a project report for February"
+   - "Build an engineer performance report"
+   - "Print inventory summary report"
+   - "Download a report"
+   - "Generate a report of ANB project"
+
+   Do NOT use report_generator for quick questions like "how many tickets?"
+   — those go to ticket_analytics. Reports are for comprehensive, formatted,
+   downloadable documents with KPI cards, tables, and branding.
+
+   **Out-of-scope report requests:**
+   If the user asks for a report on a topic the system does NOT have data for
+   (e.g., financial reports, HR reports, attendance reports, payroll, etc.),
+   do NOT route to report_generator. Instead, reply directly:
+   "I can generate reports for the following topics: Project reports (tickets, SLA, task types),
+   Engineer performance reports, Inventory / spare parts reports, and Custom reports combining the above.
+   Unfortunately, I don't have access to [requested topic] data."
+
+7. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
 
 ROUTING DISAMBIGUATION:
 - "my tickets" or "ticket summary" -> ticket_analytics (user's own tickets)
@@ -167,6 +196,7 @@ IMPORTANT RULES:
 - If a user asks something completely unrelated to OIP, tickets, or greetings, politely explain that you specialize in OIP-related questions and ticket analytics.
 
 {Prompts.HTML_OUTPUT_FORMAT}""",
-    description="Main OIP Assistant - routes to greeter, ticket analytics, engineer analytics, inventory analytics, or OIP expert",
+    description="Main OIP Assistant - routes to greeter, ticket analytics, engineer analytics, inventory analytics, OIP expert, or report generator",
+    tools=[AgentTool(agent=report_generator)],
     sub_agents=[greeter, oip_expert, ticket_analytics, engineer_analytics, inventory_analytics],
 )

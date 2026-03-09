@@ -32,6 +32,8 @@ class ChartType(Enum):
     GROUPED_BAR = "groupedBar"
     GAUGE = "gauge"
     RADIAL = "radialBar"
+    BUBBLE = "bubble"
+    SCATTER = "scatter"
 
 
 # Professional color palette (consistent with OIP branding)
@@ -346,15 +348,12 @@ def create_chart(
     insights = generate_insights(data, y_keys, chart_type)
     auto_description = description or generate_description(data, y_keys, chart_type, title)
 
-    # Create figure label
-    figure_label = f"Figure {figure_number}: {title}"
-
-    # Build the chart configuration
+    # Build the chart configuration (figureLabel set after session state determines number)
     config = {
         "type": chart_type,
         "title": title,
         "description": auto_description,
-        "figureLabel": figure_label,
+        "figureLabel": "",  # set below after accumulator determines figure number
         "data": data,
         "xKey": x_key,
         "series": series,
@@ -407,29 +406,37 @@ def create_chart(
     print(f"📊 [CHART CONFIG] type={chart_type}, series={[s['key'] for s in series]}, data_points={len(data)}")
     print(f"📊 [CHART JSON preview] {chart_json[:500]}")
 
-    # Store chart JSON in session state for post-processor injection.
-    # This bypasses the LLM output token limit — the post-processor
-    # reads this directly and injects it with <!--CHART_START--> delimiters.
+    # Determine figure number from session accumulator, then store
+    _fig_num = figure_number  # default from parameter
     if tool_context is not None:
         try:
+            existing = tool_context.state.get("last_chart_outputs") or []
+            if isinstance(existing, str):
+                existing = [existing]
+            _fig_num = len(existing) + 1  # auto-increment based on charts already created
+            config["figureLabel"] = f"Figure {_fig_num}: {title}"
+            chart_json = json.dumps(config, indent=2)  # re-serialize with correct label
             tool_context.state["last_chart_output"] = chart_json
+            existing.append(chart_json)
+            tool_context.state["last_chart_outputs"] = existing
         except Exception:
-            pass  # Non-critical — post-processor has fallback
+            pass
+    figure_label = f"Figure {_fig_num}: {title}"
+    if not config.get("figureLabel"):
+        config["figureLabel"] = figure_label
+        chart_json = json.dumps(config, indent=2)
 
-    # Build insights HTML
-    insights_html = ""
-    if insights:
-        insights_list = "".join(f"<li>{insight}</li>" for insight in insights)
-        insights_html = f"<p><strong>Key Insights:</strong></p><ul>{insights_list}</ul>"
+    # Return chart block + brief context for the LLM to write its own analysis.
+    # The chart card already renders figureLabel, description, and insights from JSON.
+    # We give the LLM a plain-text context note (not HTML) so it knows what data the
+    # chart contains and can write unique analytical commentary.
+    insights_note = "; ".join(insights) if insights else ""
+    context_note = f"[Chart rendered: {figure_label}. {auto_description}. {insights_note}]"
 
-    # Return both the chart config and a human-readable summary
     output = f"""<!--CHART_START-->
 {chart_json}
 <!--CHART_END-->
-
-<p><em>{figure_label}</em></p>
-<p>{auto_description}</p>
-{insights_html}"""
+{context_note}"""
 
     return output
 
@@ -541,7 +548,7 @@ def create_completion_rate_gauge(
         "type": "gauge",
         "title": title,
         "description": f"Current completion rate vs target of {target_rate:.0f}%",
-        "figureLabel": f"Figure 1: {title}",
+        "figureLabel": "",  # set below after accumulator determines figure number
         "value": round(completion_rate, 1),
         "maxValue": 100,
         "target": target_rate,
@@ -562,28 +569,33 @@ def create_completion_rate_gauge(
         }
     }
 
-    chart_json = json.dumps(config, indent=2)
-
-    # Store in session for post-processor injection
+    # Determine figure number from session accumulator, then store
+    _fig_num = 1
     if tool_context is not None:
         try:
+            existing = tool_context.state.get("last_chart_outputs") or []
+            if isinstance(existing, str):
+                existing = [existing]
+            _fig_num = len(existing) + 1
+            config["figureLabel"] = f"Figure {_fig_num}: {title}"
+            chart_json = json.dumps(config, indent=2)
             tool_context.state["last_chart_output"] = chart_json
+            existing.append(chart_json)
+            tool_context.state["last_chart_outputs"] = existing
         except Exception:
-            pass
+            chart_json = json.dumps(config, indent=2)
+    else:
+        config["figureLabel"] = f"Figure {_fig_num}: {title}"
+        chart_json = json.dumps(config, indent=2)
+    figure_label = f"Figure {_fig_num}: {title}"
 
-    # Build insights HTML
-    insights_html = f"""<ul>
-<li>Current: <strong>{completion_rate:.1f}%</strong></li>
-<li>Target: {target_rate:.0f}%</li>
-<li><span style='color:{status_color}'>{status_msg}</span></li>
-</ul>"""
+    # Return chart block + brief context note for LLM analysis
+    context_note = f"[Chart rendered: {figure_label}. Current: {completion_rate:.1f}%, Target: {target_rate:.0f}%. {status_msg}]"
 
     return f"""<!--CHART_START-->
 {chart_json}
 <!--CHART_END-->
-
-<p><em>Figure 1: {title}</em></p>
-{insights_html}"""
+{context_note}"""
 
 
 def create_tickets_over_time_chart(

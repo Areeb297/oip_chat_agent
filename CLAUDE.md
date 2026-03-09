@@ -15,15 +15,52 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Claude's Expertise
 
 Claude is an expert in **Google Agent Development Kit (ADK)** - the SDK used to build this chatbot. This includes:
-- Agent creation and orchestration using `google.adk.agents.Agent`
+- Agent creation and orchestration using `google.adk.agents.LlmAgent`
 - Multi-agent architectures with sub-agents and tool delegation
 - ADK tool definitions and function annotations
 - Session management and conversation flows
 - Integration with Gemini models via ADK
 - ADK CLI commands (`adk web`, `adk run`, etc.)
 - ToolContext for session state management
+- Workflow agents (SequentialAgent, ParallelAgent, LoopAgent)
+- ADK plugins (ReflectAndRetryToolPlugin, analytics)
+- Chart guardrails via `after_model_callback`
 
 Refer to ADK documentation and patterns when extending or debugging this project.
+
+### Google ADK Version & Latest Updates
+
+**Current project**: `google-adk>=0.1.0` in requirements.txt
+**Latest stable**: **v1.26.0** (Feb 26, 2026) — Python 3.10+ required since v1.19.0
+
+**Key features available in latest ADK (relevant to this project)**:
+
+| Feature | Version | Relevance |
+|---------|---------|-----------|
+| **Async services** | v1.0.0 | All `BaseSessionService`, `BaseArtifactService` are now async. `tool_context.load_artifact()` needs `await`. |
+| **Progressive SSE Streaming** | v1.22.0 (default-on) | Streams function call arguments progressively — could improve `/run_sse` UX |
+| **Session Rewind** | v1.17.0 | Rewind session to before a previous invocation — useful for "redo" flows |
+| **Token Compaction** | v1.26.0 | Intra-invocation compaction for long conversations — helps with context limits |
+| **Agent Skills** | v1.26.0 | `load_skill_from_dir()`, `SkillToolset` — modular skill packaging |
+| **Agent Registry** | v1.26.0 | Register/discover agents programmatically |
+| **Workflow Agents** | v1.0.0+ | `SequentialAgent`, `ParallelAgent`, `LoopAgent` — deterministic multi-agent flows |
+| **transfer_to_agent enum** | v1.20.0 | Validates routing targets at build time |
+| **LlmAgent.model optional** | v1.22.0 | Agents can inherit model from parent |
+| **thinking_config** | v1.23.0 | Control model reasoning depth |
+| **Credential manager** | v1.24.0 | Now accepts `tool_context` instead of `callback_context` |
+| **MCP overhaul** | v1.0.0+ | Simplified MCPToolset, resource loading (v1.25.0), auth support (v1.23.0) |
+
+**Breaking changes to watch for if upgrading**:
+- v1.0.0: Async services — all `ToolContext` artifact calls need `await`
+- v1.19.0: Python 3.10+ minimum
+- v1.22.0: JSON-based DB schema for `DatabaseSessionService` (migration: `adk migrate session`)
+- v1.24.0: Credential manager signature change (`callback_context` → `tool_context`)
+
+**New agent types available** (not yet used in this project):
+- `SequentialAgent` — execute sub-agents in strict order
+- `ParallelAgent` — fan out sub-agents simultaneously
+- `LoopAgent` — repeat sub-agent sequence with session state for inter-pass communication
+- **A2A Protocol v0.2** — agent-to-agent communication across services
 
 ## Project Overview
 
@@ -109,6 +146,11 @@ TickTraq Webapp (.NET/Angular)
 │  │ (3 tools)          │ │ (2 tools)           │         │
 │  │ ReAct + DailyLogs  │ │ ReAct               │         │
 │  └────────────────────┘ └─────────────────────┘         │
+│  ┌──────────────────────────────────────────┐           │
+│  │report_generator (SequentialAgent, 4 tools)│          │
+│  │ planner → collector → builder            │           │
+│  │ PDF-ready HTML reports                   │           │
+│  └──────────────────────────────────────────┘           │
 │        │          │          │          │                │
 │   SQL Server  Chart Engine  FAISS   DailyActivityLog    │
 │   (TickTraq)  (Recharts)   (RAG)   (Engineer Logs)     │
@@ -129,11 +171,16 @@ The Runner uses Google ADK's plugin system for robust error handling:
   - Handles connection-level failures (SQL Server down, network timeout)
   - 2 retries with exponential backoff (1s, 2s)
 
+### Chart Guardrails (Three-Layer Validation)
+1. **Pydantic schema validation** (`chart_guardrails.py` → `ChartSchema`) — validates chart JSON structure
+2. **ADK after_model_callback** (`fix_chart_output`) — registered on `ticket_analytics`, `engineer_analytics`, `inventory_analytics` agents; re-wraps orphaned chart JSON in `<!--CHART_START-->...<!--CHART_END-->` delimiters
+3. **Post-processor in main.py** — safety net that strips/fixes chart output before SSE streaming
+
 Enhancement roadmap: See `docs/agentic_oip_enhancements.md` for planned plugins (response validation, parameter pre-check).
 
 ## Agent Architecture
 
-**Total: 1 Root Agent + 5 Sub-Agents (1 orphaned)**
+**Total: 1 Root Agent + 6 Sub-Agents (1 orphaned)**
 
 ```
 root_agent (oip_assistant)          — Coordinator/Dispatcher, no tools
@@ -141,7 +188,11 @@ root_agent (oip_assistant)          — Coordinator/Dispatcher, no tools
     ├── oip_expert                  — OIP documentation (RAG), 1 tool
     ├── ticket_analytics            — Tickets, SLA, PM checklists, charts, 13 tools
     ├── engineer_analytics          — Engineer performance, daily logs, certs, 3 tools
-    └── inventory_analytics         — Spare parts consumption, 2 tools
+    ├── inventory_analytics         — Spare parts consumption, 2 tools
+    └── report_generator            — SequentialAgent: PDF report pipeline, 4 tools
+        ├── report_planner          — Analyzes request, resolves project names, outputs JSON plan
+        ├── report_data_collector   — Calls collect_report_data() with plan parameters
+        └── report_builder          — Writes executive summary + insights, generates HTML
 
     (orphaned) data_visualization   — Dead code, not registered as sub-agent
 ```
@@ -154,10 +205,11 @@ root_agent (oip_assistant)          — Coordinator/Dispatcher, no tools
 
 **Routing Logic**:
 - Greeting patterns (hi, hello, marhaba) → `greeter`
-- Ticket/workload/SLA/PM checklist queries → `ticket_analytics`
+- Ticket/workload/SLA/PM checklist/task type (TR/PM) queries → `ticket_analytics`
 - OIP platform/documentation questions → `oip_expert`
 - Engineer performance, daily activity logs, certifications → `engineer_analytics`
 - Spare parts, inventory, consumption → `inventory_analytics`
+- Generate/create/build/download report → `report_generator`
 - General follow-ups → answers directly
 
 ### 2. Greeter Sub-Agent
@@ -188,7 +240,7 @@ root_agent (oip_assistant)          — Coordinator/Dispatcher, no tools
 - `get_ticket_timeline()` - Time-series aggregation (week/month/quarter/year)
 - `get_pm_checklist_data()` - PM site equipment data (Panel IPs, models, quantities)
 - `get_current_date()` - Get date context for time-based queries
-- `get_lookups()` - Reference data (projects, teams, regions, statuses)
+- `get_lookups()` - Reference data (projects, teams, regions, statuses, task types)
 
 **Session-Aware Chart Tools:**
 - `create_chart_from_session()` - Flexible metric selection from session data (preferred for "chart the above")
@@ -250,23 +302,63 @@ Triggered by `get_engineer_performance(include_activity=True)` which returns a 3
 - Groups by item, site, category, or project
 - Session state for chart follow-ups (last_inventory_data)
 
+### 7. Report Generator (SequentialAgent Pipeline)
+**Name**: `report_generator`
+**File**: `my_agent/agents/report_generator.py`
+**Purpose**: Generate professional PDF-ready HTML reports with KPI cards, executive summary, insights, and branded styling
+**Pattern**: ADK `SequentialAgent` — 3-agent pipeline (planner → collector → builder)
+**Wrapped as**: `AgentTool(agent=report_generator)` on root agent
+
+**Pipeline Flow**:
+```
+report_planner (output_key="report_plan")
+    → report_data_collector (reads {report_plan}, output_key="collected_data")
+        → report_builder (reads {report_plan} + {collected_data}, output_key="final_report")
+```
+
+**Sub-Agent Details**:
+
+1. **report_planner** — Analyzes user's report request, calls `get_current_date()` and `get_lookups()` to resolve project abbreviations (e.g., "ANB" → "Arab National Bank"). Outputs a JSON plan with report_type, filters, sections, title, emphasis. **Default**: all-time data when no date specified.
+
+2. **report_data_collector** — Reads the JSON plan from `{report_plan}`, calls `collect_report_data()` with extracted parameters. Summarizes what was collected.
+
+3. **report_builder** — Reads both `{report_plan}` and `{collected_data}`. Writes an executive summary (3-5 sentence narrative) and categorized insights (positive/warning/info/achievement). Calls `build_html_report()` to generate the final HTML.
+
+**Tools** (4 total):
+- `get_current_date()` — Date context (planner)
+- `get_lookups()` — Project name resolution (planner)
+- `collect_report_data()` — Fetches all report data from SQL Server (collector)
+- `build_html_report()` — Generates self-contained HTML report (builder)
+
+**Report Sections** (numbered, auto-skips empty sections):
+1. Executive Summary — LLM-generated performance narrative
+2. Key Insights — Categorized bullets (positive/warning/info/achievement)
+3. Ticket Status Overview — KPI cards + status breakdown table
+4. Task Type Breakdown — PM/TR/Other distribution
+5. Engineer Performance — Per-engineer stats table
+6. Inventory Consumption — Spare parts usage table
+
+**SSE Delivery**: `main.py` captures report HTML from session state (`last_report_html`), sends via `reportHtml` field in final SSE event. Persisted in DB with `<!--REPORT_START-->...<!--REPORT_END-->` delimiters.
+
+**Frontend Rendering**: TickTraq webapp displays report in `ChatbotReportPanel` (iframe), with Download PDF (html2pdf.js) and Print buttons. Chat message shows Claude-style artifact card.
+
 ### Orphaned Agent (Dead Code)
 **Name**: `data_visualization`
 **File**: `my_agent/agents/data_visualization.py`
 **Status**: Defined but NOT imported or registered as a sub-agent
 **Note**: Chart functionality was merged into `ticket_analytics` instead. This file can be deleted.
 
-## Tools Reference (19 total across all agents)
+## Tools Reference (21 total across all agents)
 
 ### RAG Tool (`my_agent/tools/rag_tool.py`)
 - `search_oip_documents(query, top_k=5)` → `{status, query, results[], context, message}`
 
 ### Database Tools (`my_agent/tools/db_tools.py`)
-- `get_ticket_summary(project_names, team_names, region_names, month, year, date_from, date_to, include_breakdown)` → `{TotalTickets, OpenTickets, CompletedTickets, SLABreached, CompletionRate, by_region[], by_project[], by_team[]}`
-- `get_ticket_timeline(period, project_names, team_names, region_names, date_from, date_to)` → `{timeline: [{Period, TicketsCreated, TicketsCompleted}]}`
+- `get_ticket_summary(project_names, team_names, region_names, task_type_names, month, year, date_from, date_to, include_breakdown)` → `{TotalTickets, OpenTickets, CompletedTickets, SLABreached, CompletionRate, by_region[], by_project[], by_team[]}`
+- `get_ticket_timeline(period, project_names, team_names, region_names, task_type_names, date_from, date_to)` → `{timeline: [{Period, TicketsCreated, TicketsCompleted}]}`
 - `get_pm_checklist_data(site_name, field_name, field_value, sub_category_name, ...)` → 3 modes: extension, equipment, overview
 - `get_current_date()` → `{today, current_month, current_year, ...}`
-- `get_lookups(lookup_type)` → `{regions[], projects[], teams[], statuses[]}`
+- `get_lookups(lookup_type)` → `{regions[], projects[], teams[], statuses[], taskTypes[]}`
 - `create_chart_from_session(metrics, chart_type, title)` → reads `last_ticket_data` from session
 
 ### Engineer Tools (`my_agent/tools/engineer_tools.py`)
@@ -287,6 +379,10 @@ All return HTML with `<!--CHART_START-->JSON<!--CHART_END-->` for frontend Recha
 - `create_pm_chart()` — PM data charts (reads from session)
 - `create_engineer_chart()` — Engineer data charts (reads from session)
 - `create_inventory_chart()` — Inventory data charts (reads from session)
+
+### Report Tools (`my_agent/tools/report_tools.py`)
+- `collect_report_data(report_type, project_names, team_names, region_names, employee_names, month, year, date_from, date_to, sections)` → `{status, report_data: {tickets{}, task_types{}, timeline[], engineers[], certifications[], inventory[]}, filters_applied}`
+- `build_html_report(title, executive_summary, insights, emphasis)` → `{status, message}` — generates self-contained HTML with CSS, SVG logo, KPI cards, tables; stores in session state `last_report_html`
 
 ### Chat History Tools (`my_agent/tools/chat_history.py`)
 Not ADK tools — called by `main.py` for DB persistence:
@@ -354,6 +450,18 @@ The frontend is embedded in the **TickTraq .NET/Angular webapp** (separate repos
 
 SQL scripts: `scripts/sql/usp_Chatbot_*.sql`
 
+### Task Types (LookupChild under LookupMaster Id=5)
+
+| TaskTypeId | Name | Description |
+|------------|------|-------------|
+| 19 | TR | Trouble Report — reactive/corrective tickets |
+| 20 | PM | Preventive Maintenance — scheduled maintenance tickets |
+| 21 | Other | Miscellaneous tasks |
+
+Task types are stored in `Tickets.TaskTypeId` column, mapped to `LookupChild.Id`.
+The `get_lookups(lookup_type="TaskTypes")` tool returns these for agent reference.
+The `get_ticket_summary()` and `get_ticket_timeline()` tools accept `task_type_names` parameter to filter by task type (e.g., `task_type_names="PM"` or `task_type_names="TR,PM"`).
+
 ## Session State Management
 
 **ADK Session State** (set in `main.py`, used by tools):
@@ -420,11 +528,14 @@ All agents use HTML output format (not markdown):
 | `my_agent/agents/ticket_analytics.py` | Ticket analytics sub-agent (13 tools) |
 | `my_agent/agents/engineer_analytics.py` | Engineer performance + daily logs sub-agent (3 tools) |
 | `my_agent/agents/inventory_analytics.py` | Inventory consumption sub-agent (2 tools) |
+| `my_agent/agents/report_generator.py` | Report generation SequentialAgent pipeline (3 sub-agents, 4 tools) |
 | `my_agent/agents/data_visualization.py` | **DEAD CODE** — orphaned, not registered |
 | `my_agent/tools/db_tools.py` | SQL Server tools (ticket summary, timeline, PM, lookups) |
+| `my_agent/tools/report_tools.py` | Report data collection + HTML report builder |
 | `my_agent/tools/engineer_tools.py` | Engineer performance + certification tools |
 | `my_agent/tools/inventory_tools.py` | Inventory consumption tools |
 | `my_agent/tools/chart_tools.py` | All Recharts visualization tools (9 chart functions) |
+| `my_agent/tools/chart_guardrails.py` | Chart validation (after_model_callback) + Pydantic schema |
 | `my_agent/tools/rag_tool.py` | FAISS search tool for OIP documents |
 | `my_agent/tools/chat_history.py` | Chat persistence (ChatbotMessages/ChatbotSessions DB) |
 | `my_agent/tools/suggestions.py` | Follow-up suggestion generation (rule-based + LLM) |
@@ -435,6 +546,13 @@ All agents use HTML output format (not markdown):
 | `scripts/ingest_documents.py` | Document ingestion CLI |
 | `scripts/inspect_db.py` | DB schema inspector (dev tool) |
 | `scripts/sql/*.sql` | All stored procedure SQL scripts |
+| `docs/spec-task-type-filter.md` | Spec for task type filtering feature |
+| `docs/spec-report-generation.md` | Spec for report generation pipeline |
+| `docs/architecture.md` | Full Mermaid architecture diagrams |
+| `docs/agentic_oip_enhancements.md` | Planned enhancements roadmap |
+| `docs/production-llm-saudi.md` | Saudi data compliance migration plan |
+| `docs/API_REFERENCE.md` | API endpoint documentation |
+| `docs/data-expansion-roadmap.md` | New data source roadmap |
 
 ## Configuration Reference
 
@@ -728,4 +846,25 @@ FAISS returns top 5 matching chunks
 LLM generates answer from retrieved context
     ↓
 Frontend → ChatMessage renders HTML response
+```
+
+### Report Generation
+```
+User: "Generate a report for ANB"
+    ↓
+root_agent → routes to report_generator (SequentialAgent)
+    ↓
+report_planner → calls get_lookups("Projects"), resolves "ANB" → "Arab National Bank"
+    → outputs JSON plan: {report_type: "project", project_names: "Arab National Bank", ...}
+    ↓
+report_data_collector → calls collect_report_data(project_names="Arab National Bank", ...)
+    → SP calls: GetTicketSummary, GetEngineerPerformance, GetInventoryConsumption, etc.
+    ↓
+report_builder → writes executive_summary + insights from collected data
+    → calls build_html_report(title=..., executive_summary=..., insights=...)
+    → HTML stored in session state (last_report_html)
+    ↓
+main.py → captures report HTML, sends via SSE {reportHtml: "..."}
+    ↓
+Frontend → ChatbotReportPanel renders in iframe, artifact card in chat
 ```

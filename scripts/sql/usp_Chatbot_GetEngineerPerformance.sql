@@ -16,7 +16,10 @@ CREATE OR ALTER PROCEDURE [dbo].[usp_Chatbot_GetEngineerPerformance]
     @Year INT = NULL,                          -- 2020-2030
     @DateFrom DATE = NULL,                     -- Start date filter
     @DateTo DATE = NULL,                       -- End date filter
-    @IncludeActivity BIT = 0                   -- 1 = include DailyActivityLog breakdown (3rd result set)
+    @IncludeActivity BIT = 0,                   -- 1 = include DailyActivityLog breakdown (3rd result set)
+    @RoleNames NVARCHAR(MAX) = NULL             -- Comma-separated role names to filter (e.g. "Field Engineer,Resident Engineer")
+                                                 -- NULL = defaults to field-level roles only (Field Engineer, Resident Engineer)
+                                                 -- "All" = no role filter, show everyone
 )
 AS
 BEGIN
@@ -149,6 +152,48 @@ BEGIN
     END
 
     -- =========================================
+    -- ROLE FILTER (filter employees by their role in TeamRoles)
+    -- Default: only Field Engineer (2) and Resident Engineer (8)
+    -- Pass "All" to skip role filtering
+    -- =========================================
+    DECLARE @SelectedRoles TABLE (RoleId INT);
+    DECLARE @FilterByRole BIT = 1;
+
+    IF @RoleNames IS NULL OR LTRIM(RTRIM(@RoleNames)) = 'All'
+    BEGIN
+        SET @FilterByRole = 0;  -- No role filter — show all employees
+    END
+    ELSE
+    BEGIN
+        -- User/agent specified specific roles
+        INSERT INTO @SelectedRoles (RoleId)
+        SELECT DISTINCT r.Id
+        FROM dbo.Roles r
+        CROSS APPLY STRING_SPLIT(@RoleNames, ',') s
+        WHERE r.Name LIKE '%' + LTRIM(RTRIM(s.value)) + '%'
+          AND r.IsActive = 1;
+
+        -- If no matching roles found, fall back to no filter
+        IF NOT EXISTS (SELECT 1 FROM @SelectedRoles)
+            SET @FilterByRole = 0;
+    END
+
+    -- Build filtered employee IDs by role (only employees who hold the selected role in at least one team)
+    DECLARE @RoleFilteredEmployees TABLE (EmployeeId INT);
+    IF @FilterByRole = 1
+    BEGIN
+        INSERT INTO @RoleFilteredEmployees (EmployeeId)
+        SELECT DISTINCT u.EmployeeId
+        FROM dbo.TeamRoleUsers tru
+        INNER JOIN dbo.TeamRoles tr ON tr.Id = tru.TeamRoleId
+        INNER JOIN dbo.Users u ON u.Id = tru.UserId
+        WHERE tr.RoleId IN (SELECT RoleId FROM @SelectedRoles)
+          AND tru.IsActive = 1 AND ISNULL(tru.IsDeleted, 0) = 0
+          AND tr.IsActive = 1 AND ISNULL(tr.IsDeleted, 0) = 0
+          AND u.EmployeeId IS NOT NULL;
+    END
+
+    -- =========================================
     -- DATE FILTER LOGIC
     -- =========================================
     DECLARE @FilterDateFrom DATE, @FilterDateTo DATE;
@@ -205,6 +250,8 @@ BEGIN
       AND (@TeamNames IS NULL OR tk.TeamId IN (SELECT TeamId FROM @SelectedTeams))
       AND (@RegionNames IS NULL OR tk.StateProvinceId IN (SELECT RegionId FROM @SelectedRegions))
       AND (@EmployeeNames IS NULL OR tk.EmployeeId IN (SELECT EmployeeId FROM @SelectedEmployees))
+      -- Role filter (default: only field-level roles)
+      AND (@FilterByRole = 0 OR tk.EmployeeId IN (SELECT EmployeeId FROM @RoleFilteredEmployees))
       -- Date filters (use ReportedDate — the user-facing ticket date)
       AND (@FilterDateFrom IS NULL OR CAST(tk.ReportedDate AS DATE) >= @FilterDateFrom)
       AND (@FilterDateTo IS NULL OR CAST(tk.ReportedDate AS DATE) <= @FilterDateTo)
@@ -248,6 +295,8 @@ BEGIN
       AND (@TeamNames IS NULL OR tk.TeamId IN (SELECT TeamId FROM @SelectedTeams))
       AND (@RegionNames IS NULL OR tk.StateProvinceId IN (SELECT RegionId FROM @SelectedRegions))
       AND (@EmployeeNames IS NULL OR tk.EmployeeId IN (SELECT EmployeeId FROM @SelectedEmployees))
+      -- Role filter
+      AND (@FilterByRole = 0 OR tk.EmployeeId IN (SELECT EmployeeId FROM @RoleFilteredEmployees))
       AND (@FilterDateFrom IS NULL OR CAST(tk.ReportedDate AS DATE) >= @FilterDateFrom)
       AND (@FilterDateTo IS NULL OR CAST(tk.ReportedDate AS DATE) <= @FilterDateTo);
 
@@ -278,6 +327,8 @@ BEGIN
           AND (@ProjectNames IS NULL OR dal.ProjectId IN (SELECT ProjectId FROM @SelectedProjects))
           AND (@TeamNames IS NULL OR dal.TeamId IN (SELECT TeamId FROM @SelectedTeams))
           AND (@EmployeeNames IS NULL OR dal.EmployeeId IN (SELECT EmployeeId FROM @SelectedEmployees))
+          -- Role filter
+          AND (@FilterByRole = 0 OR dal.EmployeeId IN (SELECT EmployeeId FROM @RoleFilteredEmployees))
           -- Date filters on WorkingDate
           AND (@FilterDateFrom IS NULL OR dal.WorkingDate >= @FilterDateFrom)
           AND (@FilterDateTo IS NULL OR dal.WorkingDate <= @FilterDateTo)

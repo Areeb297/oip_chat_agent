@@ -8,7 +8,15 @@ import logging
 import os
 import re
 import uuid
+import warnings
 from typing import Any, Optional, List
+
+# Suppress noisy warnings from LiteLLM/Pydantic internals
+warnings.filterwarnings("ignore", message=".*PydanticSerializationUnexpectedValue.*")
+warnings.filterwarnings("ignore", message=".*Pydantic serializer warnings.*")
+# Suppress LiteLLM "Provider List" spam
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("litellm").setLevel(logging.WARNING)
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -28,15 +36,11 @@ def _md_to_html(text: str) -> str:
     if not text:
         return text
 
-    # Protect <!--CHART_START-->...<!--CHART_END--> blocks from markdown transforms
+    # Protect ALL <!--CHART_START-->...<!--CHART_END--> blocks from markdown transforms
     # (the italic regex would corrupt * inside JSON strings like "14*10GE")
-    _CHART_PH = "\x00__CHART__\x00"
-    chart_block = ""
-    if "<!--CHART_START-->" in text and "<!--CHART_END-->" in text:
-        s = text.index("<!--CHART_START-->")
-        e = text.index("<!--CHART_END-->") + len("<!--CHART_END-->")
-        chart_block = text[s:e]
-        text = text[:s] + _CHART_PH + text[e:]
+    chart_blocks = re.findall(r'<!--CHART_START-->.*?<!--CHART_END-->', text, re.DOTALL)
+    for i, block in enumerate(chart_blocks):
+        text = text.replace(block, f"\x00__CHART_{i}__\x00", 1)
 
     # Strip any leaked filter tags from responses
     text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
@@ -48,16 +52,16 @@ def _md_to_html(text: str) -> str:
     # Italic: *text* or _text_ → <em>text</em>  (but not inside HTML tags)
     text = re.sub(r'(?<![<\w])[\*](.+?)[\*](?![>])', r'<em>\1</em>', text)
 
-    # Restore chart block
-    if chart_block:
-        text = text.replace(_CHART_PH, chart_block)
+    # Restore all chart blocks
+    for i, block in enumerate(chart_blocks):
+        text = text.replace(f"\x00__CHART_{i}__\x00", block)
 
     return text.strip()
 
 
 # Regex for chart JSON pattern (imported from guardrails but kept local for speed)
 _CHART_JSON_RE = re.compile(
-    r'\{\s*"type"\s*:\s*"(?:bar|pie|donut|line|area|stackedBar|groupedBar|gauge|radialBar)"'
+    r'\{\s*"type"\s*:\s*"(?:bar|pie|donut|line|area|stackedBar|groupedBar|gauge|radialBar|bubble|scatter)"'
 )
 
 
@@ -478,8 +482,7 @@ async def run_sse(request: RunSSERequest):
     elif request.region:
         region_names_csv = request.region
 
-    logger.debug("[USER CONTEXT] username=%s, role=%s, projects=%s, teams=%s, regions=%s",
-                 username, request.userRole, project_names_csv, team_names_csv, region_names_csv)
+    print(f"[FILTERS] projects={request.projectNames} -> csv={project_names_csv} | teams={request.teamNames} -> csv={team_names_csv} | regions={request.regionNames} -> csv={region_names_csv}")
 
     # Build user context state
     # Use empty string instead of None to ensure ADK state properly clears old values
@@ -534,7 +537,7 @@ async def run_sse(request: RunSSERequest):
 
     if filter_context:
         message_text = f"{filter_context}{message_text}"
-        logger.debug("[FILTER INJECTION] %s", filter_context.strip())
+        print(f"[INJECTED MESSAGE] {message_text[:200]}")
 
     # Create user message content
     user_content = types.Content(
@@ -567,8 +570,19 @@ async def run_sse(request: RunSSERequest):
             last_tool = None
             chart_tool_called = False  # When True, buffer text instead of streaming
             captured_chart_html = ""  # Chart tool output captured from function_response
+            captured_report_html = "" # Report HTML captured from build_html_report response
             streamed_text = ""       # text already sent to client via partial chunks
             final_response_text = "" # complete text from the final event (for DB)
+
+            # Clear multi-chart accumulator in session state at start of each request
+            try:
+                _sess = await session_service.get_session(
+                    app_name="oip_assistant", user_id=user_id, session_id=session_id,
+                )
+                if _sess and _sess.state:
+                    _sess.state["last_chart_outputs"] = []
+            except Exception:
+                pass
 
             async for event in runner.run_async(
                 user_id=user_id,
@@ -576,22 +590,6 @@ async def run_sse(request: RunSSERequest):
                 new_message=user_content,
                 run_config=RunConfig(streaming_mode=stream_mode),
             ):
-                # ── DIAGNOSTIC: log every event's structure ──
-                _diag_parts = []
-                if hasattr(event, 'content') and event.content and getattr(event.content, 'parts', None):
-                    for _dp in event.content.parts:
-                        if hasattr(_dp, 'function_call') and _dp.function_call:
-                            _diag_parts.append(f"fn_call:{getattr(_dp.function_call, 'name', '?')}")
-                        elif hasattr(_dp, 'function_response') and _dp.function_response:
-                            _diag_parts.append(f"fn_resp:{getattr(_dp.function_response, 'name', '?')}")
-                        elif getattr(_dp, 'thought', False):
-                            _diag_parts.append("thought")
-                        elif hasattr(_dp, 'text') and _dp.text:
-                            _diag_parts.append(f"text({len(_dp.text)})")
-                        else:
-                            _diag_parts.append(type(_dp).__name__)
-                print(f"[EVENT] author={getattr(event, 'author', '?')} partial={getattr(event, 'partial', False)} final={event.is_final_response() if hasattr(event, 'is_final_response') else '?'} parts=[{', '.join(_diag_parts) if _diag_parts else 'none'}]")
-
                 # Track agent transfers for status updates
                 if hasattr(event, 'author') and event.author:
                     agent_name = event.author
@@ -602,6 +600,12 @@ async def run_sse(request: RunSSERequest):
                             "oip_expert": "Consulting OIP documentation...",
                             "ticket_analytics": "Checking ticket data...",
                             "greeter": "Preparing response...",
+                            "engineer_analytics": "Analyzing engineer performance...",
+                            "inventory_analytics": "Checking inventory data...",
+                            "report_planner": "Analyzing report requirements...",
+                            "report_data_collector": "Fetching ticket, engineer & inventory data...",
+                            "report_builder": "Writing executive summary & building report...",
+                            "report_generator": "Preparing your report...",
                         }
                         status = status_map.get(agent_name, "Working on it...")
                         yield f"data: {json.dumps({'status': status})}\n\n"
@@ -637,14 +641,26 @@ async def run_sse(request: RunSSERequest):
                                     "create_pm_chart": "Creating PM chart...",
                                     "create_engineer_chart": "Creating engineer chart...",
                                     "create_inventory_chart": "Creating inventory chart...",
+                                    "collect_report_data": "Fetching tickets, engineers, inventory & timeline data...",
+                                    "build_html_report": "Generating charts, tables & formatting PDF report...",
                                 }
                                 status = tool_status_map.get(tool_name, "Processing...")
                                 logger.debug("[TOOL CALL] %s -> %s", tool_name, status)
                                 yield f"data: {json.dumps({'status': status})}\n\n"
 
-                        # ── Capture chart tool output from function_response ──
+                        # ── Capture tool responses for status updates and chart output ──
                         if hasattr(part, 'function_response') and part.function_response:
                             resp_name = getattr(part.function_response, 'name', '')
+
+                            # Report tool progress messages
+                            report_tool_status = {
+                                "get_current_date": "Resolved date context...",
+                                "get_lookups": "Resolved project names...",
+                                "collect_report_data": "Data collected! Writing executive summary...",
+                                "build_html_report": "Report generated! Preparing preview...",
+                            }
+                            if resp_name in report_tool_status:
+                                yield f"data: {json.dumps({'status': report_tool_status[resp_name]})}\n\n"
                             if resp_name in CHART_TOOL_NAMES:
                                 resp_data = getattr(part.function_response, 'response', None)
                                 # ADK wraps string returns as {"result": str}
@@ -665,9 +681,28 @@ async def run_sse(request: RunSSERequest):
                                 elif isinstance(resp_data, str):
                                     resp_text = resp_data
                                 if "<!--CHART_START-->" in resp_text:
-                                    captured_chart_html = resp_text
+                                    captured_chart_html += resp_text  # Accumulate for multi-chart
                                     chart_tool_called = True  # Ensure buffering is active
-                                    print(f"[STREAM] Captured chart HTML from function_response of '{resp_name}' (len={len(captured_chart_html)})")
+                                    print(f"[STREAM] Captured chart HTML from function_response of '{resp_name}' (total accumulated={len(captured_chart_html)})")
+
+                            # ── Capture report HTML from build_html_report ──
+                            if resp_name == "build_html_report":
+                                resp_data = getattr(part.function_response, 'response', None)
+                                if isinstance(resp_data, dict):
+                                    for key in ('result', 'report', 'output', 'response'):
+                                        val = resp_data.get(key, '')
+                                        if isinstance(val, str) and '<!--REPORT_START-->' in val:
+                                            captured_report_html = val
+                                            break
+                                    if not captured_report_html:
+                                        for val in resp_data.values():
+                                            if isinstance(val, str) and '<!--REPORT_START-->' in val:
+                                                captured_report_html = val
+                                                break
+                                elif isinstance(resp_data, str) and '<!--REPORT_START-->' in resp_data:
+                                    captured_report_html = resp_data
+                                if captured_report_html:
+                                    print(f"[STREAM] Captured report HTML from build_html_report (len={len(captured_report_html)})")
 
                 # ── Stream partial text chunks as they arrive ──
                 if getattr(event, 'partial', False):
@@ -724,64 +759,173 @@ async def run_sse(request: RunSSERequest):
                 s_state = {}
 
             # ── Chart injection: extract chart JSON separately ──
-            # Chart config is sent as a separate SSE field ("chartConfig")
-            # so the frontend never needs to parse it from innerHTML
-            chart_config_str = ""  # Compact JSON string for the chart
+            # Chart configs are sent as separate SSE fields so the frontend
+            # never needs to parse them from innerHTML.
+            # Supports multi-chart: multiple <!--CHART_START--> blocks per message.
+            # For multi-chart, inline placeholders (<!--CHART_PLACEHOLDER:N-->)
+            # are left in the HTML so the frontend can render chart-text-chart-text.
+            chart_configs = []  # List of compact JSON strings
 
-            if captured_chart_html and chart_tool_called:
-                # Primary: captured from function_response event stream
-                print(f"[CHART INJECT] Using captured function_response chart (len={len(captured_chart_html)})")
-                _cm = re.search(r'<!--CHART_START-->\s*(.*?)\s*<!--CHART_END-->', captured_chart_html, re.DOTALL)
-                if _cm:
+            # --- Extract charts from all available sources ---
+            def _extract_charts_from_html(html_source: str, source_label: str) -> list:
+                """Extract chart JSON configs from HTML with CHART delimiters."""
+                configs = []
+                matches = re.findall(
+                    r'<!--CHART_START-->\s*(.*?)\s*<!--CHART_END-->',
+                    html_source, re.DOTALL,
+                )
+                for m in matches:
                     try:
-                        _chart_obj = json.loads(_cm.group(1))
-                        chart_config_str = json.dumps(_chart_obj, separators=(',', ':'))
+                        obj = json.loads(m)
+                        configs.append(json.dumps(obj, separators=(',', ':')))
                     except Exception:
-                        chart_config_str = _cm.group(1).replace('\n', ' ')
-                    print(f"[CHART INJECT] Extracted chart config ({len(chart_config_str)} chars)")
-                if raw_text:
-                    before_len = len(raw_text)
-                    raw_text = _strip_chart_json_from_text(raw_text)
-                    print(f"[STRIP] raw_text {before_len} -> {len(raw_text)} chars")
-            elif chart_tool_called:
-                # Fallback: try session state
-                stored_chart_json = s_state.get("last_chart_output")
-                if stored_chart_json:
-                    print(f"[CHART INJECT] Fallback: session state (len={len(stored_chart_json)})")
-                    try:
-                        _chart_obj = json.loads(stored_chart_json)
-                        chart_config_str = json.dumps(_chart_obj, separators=(',', ':'))
-                    except Exception:
-                        chart_config_str = stored_chart_json.replace('\n', ' ')
-                    print(f"[CHART INJECT] Extracted chart config ({len(chart_config_str)} chars)")
-                    if raw_text:
+                        configs.append(m.replace('\n', ' '))
+                if configs:
+                    print(f"[CHART INJECT] {source_label}: extracted {len(configs)} chart(s)")
+                return configs
+
+            if chart_tool_called:
+                # Source 1: function_response events (most reliable)
+                if captured_chart_html:
+                    chart_configs = _extract_charts_from_html(captured_chart_html, "function_response")
+
+                # Source 2: streamed/final text contains chart JSON inline
+                if not chart_configs and raw_text and contains_chart_json(raw_text):
+                    # Ensure orphaned chart JSON gets wrapped with delimiters
+                    raw_text = ensure_chart_delimiters(raw_text)
+                    chart_configs = _extract_charts_from_html(raw_text, "streamed_text")
+
+                # Source 3: session state accumulator (last_chart_outputs list)
+                if not chart_configs:
+                    stored_list = s_state.get("last_chart_outputs") or []
+                    if isinstance(stored_list, str):
+                        stored_list = [stored_list]
+                    if stored_list:
+                        print(f"[CHART INJECT] Fallback: session state last_chart_outputs ({len(stored_list)} items)")
+                        for sj in stored_list:
+                            try:
+                                obj = json.loads(sj)
+                                chart_configs.append(json.dumps(obj, separators=(',', ':')))
+                            except Exception:
+                                chart_configs.append(sj.replace('\n', ' '))
+
+                # Source 4: legacy single chart in session state
+                if not chart_configs:
+                    stored_chart_json = s_state.get("last_chart_output")
+                    if stored_chart_json:
+                        print(f"[CHART INJECT] Fallback: session state last_chart_output (len={len(stored_chart_json)})")
+                        try:
+                            obj = json.loads(stored_chart_json)
+                            chart_configs.append(json.dumps(obj, separators=(',', ':')))
+                        except Exception:
+                            chart_configs.append(stored_chart_json.replace('\n', ' '))
+
+                # Now process raw_text: replace chart blocks with placeholders or strip
+                if chart_configs and raw_text:
+                    if len(chart_configs) > 1:
+                        placeholder_idx = 0
+                        while '<!--CHART_START-->' in raw_text and '<!--CHART_END-->' in raw_text:
+                            s = raw_text.index('<!--CHART_START-->')
+                            e = raw_text.index('<!--CHART_END-->') + len('<!--CHART_END-->')
+                            raw_text = raw_text[:s] + f'<!--CHART_PLACEHOLDER:{placeholder_idx}-->' + raw_text[e:]
+                            placeholder_idx += 1
                         raw_text = _strip_chart_json_from_text(raw_text)
+                        print(f"[MULTI-CHART] Inserted {placeholder_idx} placeholders into HTML")
+                    else:
+                        before_len = len(raw_text)
+                        raw_text = _strip_chart_json_from_text(raw_text)
+                        print(f"[STRIP] raw_text {before_len} -> {len(raw_text)} chars")
+
+            # ── Report HTML extraction ──
+            report_html_str = ""
+            if captured_report_html:
+                _rm = re.search(r'<!--REPORT_START-->(.*?)<!--REPORT_END-->', captured_report_html, re.DOTALL)
+                if _rm:
+                    report_html_str = _rm.group(1).strip()
+                    print(f"[REPORT INJECT] Extracted report HTML from function_response ({len(report_html_str)} chars)")
+            # Fallback: check raw_text for report delimiters
+            if not report_html_str and raw_text and '<!--REPORT_START-->' in raw_text:
+                _rm = re.search(r'<!--REPORT_START-->(.*?)<!--REPORT_END-->', raw_text, re.DOTALL)
+                if _rm:
+                    report_html_str = _rm.group(1).strip()
+                    print(f"[REPORT INJECT] Extracted report HTML from raw_text ({len(report_html_str)} chars)")
+            # Fallback: read from session state (when report_generator runs as AgentTool,
+            # internal tool responses aren't visible in the event stream)
+            if not report_html_str:
+                stored_report = s_state.get("last_report_html")
+                if stored_report and isinstance(stored_report, str) and len(stored_report) > 100:
+                    report_html_str = stored_report
+                    print(f"[REPORT INJECT] Fallback: session state last_report_html ({len(report_html_str)} chars)")
+            # Strip report delimiters from raw_text so chat bubble only shows summary
+            if report_html_str and raw_text:
+                raw_text = re.sub(r'<!--REPORT_START-->.*?<!--REPORT_END-->', '', raw_text, flags=re.DOTALL).strip()
 
             if raw_text:
-                # If no chart was extracted, try wrapping orphaned chart JSON
+                # Strip [Chart rendered: ...] context notes — they're for LLM context only
+                raw_text = re.sub(r'\[Chart rendered:.*?\]', '', raw_text).strip()
+                # If no charts were extracted, try wrapping orphaned chart JSON
                 # BEFORE _md_to_html() — HTML conversion corrupts * in JSON
-                if not chart_config_str:
+                if not chart_configs:
                     raw_text = ensure_chart_delimiters(raw_text)
                 clean_text = _md_to_html(raw_text)
             else:
                 clean_text = ""
 
-            # Send HTML + chartConfig as separate fields in the SSE event
-            # chartConfig bypasses innerHTML entirely — no parsing needed
-            if clean_text or chart_config_str:
+            # Send HTML + chartConfig(s) + reportHtml as separate fields in the SSE event
+            if clean_text or chart_configs or report_html_str:
                 event_data = {}
-                if clean_text:
+                # Validate chart configs
+                validated_configs = []
+                for cfg in chart_configs:
+                    if cfg and len(cfg) > 10:
+                        try:
+                            json.loads(cfg)  # Validate it's real JSON
+                            validated_configs.append(cfg)
+                        except (json.JSONDecodeError, ValueError):
+                            logger.warning("[CHART INJECT] Invalid chart JSON, skipping: %s", cfg[:50])
+
+                # For multi-chart: embed chart blocks inline in HTML at placeholder
+                # positions so the frontend renders chart → text → chart → text.
+                # The frontend already parses <!--CHART_START-->...<!--CHART_END-->
+                # blocks in HTML content, so no frontend changes needed.
+                if len(validated_configs) > 1 and clean_text and '<!--CHART_PLACEHOLDER:' in clean_text:
+                    for i, cfg in enumerate(validated_configs):
+                        clean_text = clean_text.replace(
+                            f'<!--CHART_PLACEHOLDER:{i}-->',
+                            f'<!--CHART_START-->{cfg}<!--CHART_END-->',
+                        )
                     event_data['html'] = clean_text
-                if chart_config_str:
-                    event_data['chartConfig'] = chart_config_str
-                print(f"[SSE EVENT] html={len(clean_text)}chars, chartConfig={len(chart_config_str)}chars")
+                    # Do NOT send chartConfigs separately — charts are inline in HTML.
+                    # Frontend will parse <!--CHART_START--> blocks from innerHTML.
+                    print(f"[MULTI-CHART] Embedded {len(validated_configs)} charts inline in HTML")
+                elif clean_text:
+                    event_data['html'] = clean_text
+                    # Single chart: send as separate field (backward compatible)
+                    if len(validated_configs) == 1:
+                        event_data['chartConfig'] = validated_configs[0]
+                    elif len(validated_configs) > 1:
+                        event_data['chartConfigs'] = validated_configs
+                # Send report HTML as separate field for artifact panel
+                if report_html_str:
+                    event_data['reportHtml'] = report_html_str
+                logger.debug("[SSE EVENT] html=%dchars, charts=%d, reportHtml=%dchars",
+                             len(clean_text), len(validated_configs), len(report_html_str))
                 yield f"data: {json.dumps(event_data)}\n\n"
 
             # ── Persist the clean assistant response ──
-            # For DB, embed chart with delimiters so old sessions can still render
+            # For multi-chart, charts are already embedded inline in clean_text
+            # (placeholders replaced above). For single chart, append to end.
             db_content = clean_text
-            if chart_config_str:
-                db_content += f"<!--CHART_START-->{chart_config_str}<!--CHART_END-->"
+            charts_already_inline = (
+                len(validated_configs) > 1
+                and '<!--CHART_START-->' in db_content
+            )
+            if not charts_already_inline:
+                # Single chart or no placeholders: append chart blocks at end
+                for cfg in validated_configs:
+                    db_content += f"<!--CHART_START-->{cfg}<!--CHART_END-->"
+            if report_html_str:
+                db_content += f"<!--REPORT_START-->{report_html_str}<!--REPORT_END-->"
             if db_content and db_user_id is not None:
                 save_message(session_id, "assistant", db_content)
                 # Update session title based on latest exchange (background)

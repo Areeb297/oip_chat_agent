@@ -25,6 +25,7 @@ logger = logging.getLogger("oip_chat_agent")
 KNOWN_CHART_TYPES = {
     "bar", "pie", "donut", "line", "area",
     "stackedBar", "groupedBar", "gauge", "radialBar",
+    "bubble", "scatter",
 }
 
 # Regex to find JSON starting with {"type": "<chart_type>"
@@ -73,48 +74,65 @@ def _extract_json_object(text: str, start_idx: int) -> Optional[str]:
 def ensure_chart_delimiters(text: str) -> str:
     """Scan text for chart JSON missing <!--CHART_START--> delimiters and re-wrap.
 
-    Returns the text unchanged if delimiters are already present,
-    or with orphaned chart JSON re-wrapped.
+    Handles multiple orphaned chart JSON blocks in a single text.
+    Returns the text unchanged if all chart blocks already have delimiters.
     """
     if not text:
         return text
 
-    # If delimiters already present, no action needed
-    if "<!--CHART_START-->" in text:
-        return text
+    # Find all chart JSON patterns (some may already have delimiters)
+    modified = False
+    search_start = 0
 
-    # Search for chart JSON patterns
-    match = _CHART_TYPE_PATTERN.search(text)
-    if not match:
-        return text  # No chart JSON found
+    while search_start < len(text):
+        match = _CHART_TYPE_PATTERN.search(text, search_start)
+        if not match:
+            break
 
-    # Found a potential chart JSON — extract the complete JSON object
-    start_idx = match.start()
-    chart_json = _extract_json_object(text, start_idx)
+        start_idx = match.start()
 
-    if not chart_json:
-        return text  # Could not extract valid JSON
+        # Check if this match is already inside delimiters
+        preceding = text[:start_idx]
+        # Count delimiters before this position — if there's an unclosed CHART_START, skip
+        starts_before = preceding.count("<!--CHART_START-->")
+        ends_before = preceding.count("<!--CHART_END-->")
+        if starts_before > ends_before:
+            # Inside an existing delimited block — skip past the next CHART_END
+            next_end = text.find("<!--CHART_END-->", start_idx)
+            search_start = (next_end + len("<!--CHART_END-->")) if next_end != -1 else len(text)
+            continue
 
-    # Validate it's actual chart data
-    try:
-        parsed = json.loads(chart_json)
-        if "data" not in parsed and "value" not in parsed:
-            return text  # Not a real chart object
-    except json.JSONDecodeError:
-        return text  # Not valid JSON
+        # Found an orphaned chart JSON — extract the complete JSON object
+        chart_json = _extract_json_object(text, start_idx)
+        if not chart_json:
+            search_start = start_idx + 1
+            continue
 
-    # Re-wrap with delimiters
-    end_idx = start_idx + len(chart_json)
-    wrapped = f"<!--CHART_START-->\n{chart_json}\n<!--CHART_END-->"
+        # Validate it's actual chart data
+        try:
+            parsed = json.loads(chart_json)
+            if "data" not in parsed and "value" not in parsed:
+                search_start = start_idx + len(chart_json)
+                continue
+        except json.JSONDecodeError:
+            search_start = start_idx + 1
+            continue
 
-    fixed_text = text[:start_idx] + wrapped + text[end_idx:]
+        # Re-wrap with delimiters
+        end_idx = start_idx + len(chart_json)
+        wrapped = f"<!--CHART_START-->\n{chart_json}\n<!--CHART_END-->"
+        text = text[:start_idx] + wrapped + text[end_idx:]
+        modified = True
 
-    logger.info(
-        "[CHART GUARDRAIL] Re-wrapped orphaned chart JSON with delimiters (type=%s)",
-        parsed.get("type"),
-    )
+        logger.info(
+            "[CHART GUARDRAIL] Re-wrapped orphaned chart JSON with delimiters (type=%s)",
+            parsed.get("type"),
+        )
 
-    return fixed_text
+        # Move past the wrapped block
+        search_start = start_idx + len(wrapped)
+
+    return text
 
 
 # ---------------------------------------------------------------------------
