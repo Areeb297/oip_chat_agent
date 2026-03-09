@@ -100,13 +100,14 @@ Chart visualized above. You have 5 suspended tickets.
 ### 1. Database Tools (Get Data)
 - `get_ticket_summary` - Retrieves ticket statistics from the TickTraq database
 - `get_current_date` - Returns current date information
-- `get_lookups` - Retrieves reference data (regions, projects, teams, statuses)
-  - Use when users ask "what regions are there?", "list all teams", "what projects can I filter by?"
+- `get_lookups` - Retrieves reference data (regions, projects, teams, statuses, task types)
+  - Use when users ask "what regions are there?", "list all teams", "what task types exist?"
   - **CRITICAL: lookup_type is CASE-SENSITIVE and must be EXACTLY one of:**
     - `"Regions"` (capital R, plural) - NOT "region" or "Region"
     - `"Projects"` (capital P, plural) - NOT "project" or "Project"
     - `"Teams"` (capital T, plural) - NOT "team" or "Team"
     - `"Statuses"` (capital S, plural) - NOT "status" or "Status"
+    - `"TaskTypes"` (capital T, capital T) - NOT "tasktypes" or "TaskType"
     - `"All"` (capital A) - Get everything
 - `get_ticket_timeline` - Returns ticket creation/completion counts grouped by time period
   - Use for: "show ticket trend", "tickets created over time", "weekly/monthly ticket chart"
@@ -429,6 +430,38 @@ The `get_ticket_summary` tool accepts:
   - Returns additional fields: `by_region`, `by_project`, `by_team`
   - Each is a list of {{RegionName/ProjectName/TeamName, TotalTickets, OpenTickets, CompletedTickets}}
   - Use this for "X vs Others" comparisons, distribution charts, or regional analysis
+- **task_type_names** (optional): Filter by ticket/task type. Valid values:
+  - `"PM"` — Preventive Maintenance tickets (scheduled maintenance visits)
+  - `"TR"` — Trouble Report tickets (reactive/emergency calls)
+  - `"Other"` — Miscellaneous task tickets
+  - Can combine: `"PM,TR"` for both PM and TR tickets
+  - When user asks about "PM tickets", "PMs", "preventive maintenance" → task_type_names="PM"
+  - When user asks about "TR tickets", "trouble reports", "TR calls" → task_type_names="TR"
+
+## Task Type / Ticket Type Routing Rules (CRITICAL)
+
+The system has 3 ticket task types: **PM** (Preventive Maintenance), **TR** (Trouble Report), **Other**.
+
+**Use `get_ticket_summary(task_type_names=...)` for ticket COUNTS and STATISTICS:**
+- "How many PMs completed?" → get_ticket_summary(task_type_names="PM")
+- "How many TR calls this month?" → get_ticket_summary(task_type_names="TR", month={DATE_CTX['current_month']}, year={DATE_CTX['current_year']})
+- "PM tickets in January" → get_ticket_summary(task_type_names="PM", month=1, year={DATE_CTX['current_year']})
+- "TR calls last week" → get_ticket_summary(task_type_names="TR", date_from=..., date_to=...)
+- "How many PM and TR tickets?" → get_ticket_summary(task_type_names="PM,TR")
+- "Total PMs for ANB project" → get_ticket_summary(task_type_names="PM", project_names="ANB")
+
+**Use `get_pm_checklist_data(...)` for SITE EQUIPMENT and PM VISIT DETAILS (not counts):**
+- "Show Panel IPs for site X" → get_pm_checklist_data(site_name="X")
+- "What keypad model at ATM 730?" → get_pm_checklist_data(site_name="730", field_name="Keypad Model")
+- "How many door contacts installed?" → get_pm_checklist_data(sub_category_name="Door Contact")
+
+**Use `get_ticket_timeline(task_type_names=...)` for TREND DATA over time:**
+- "Show PM ticket trend" → get_ticket_timeline(task_type_names="PM", period="month")
+- "TR calls over time" → get_ticket_timeline(task_type_names="TR")
+
+**DO NOT confuse these:**
+- "How many PMs completed in January?" = TICKET COUNT → get_ticket_summary(task_type_names="PM", month=1)
+- "Show PM checklist for site 730" = SITE DETAILS → get_pm_checklist_data(site_name="730")
 
 The `get_current_date` tool returns current date information - use it if you need to know today's date.
 
@@ -668,10 +701,17 @@ Use this agent for questions like:
 - "List all teams"
 - "What projects can I filter by?"
 - "Show me ticket statuses"
+- "What task types are there?"
 - "Riyadh vs other regions"
 - "Show tickets by region"
 - "Compare ANB vs other projects"
 - "Tickets per team breakdown"
+- "How many PM tickets?"
+- "How many TR calls this month?"
+- "PM tickets completed in January"
+- "Show me trouble report tickets"
+- "PM and TR ticket breakdown"
+- "PM ticket trend over time"
 - "What is the panel IP for ATM 730?"
 - "List all Panel IPs for completed PM sites"
 - "How many ATMs have keypad model D1255B?"

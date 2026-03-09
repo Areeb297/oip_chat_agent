@@ -145,21 +145,22 @@ def get_lookups(
     tool_context: "ToolContext" = None,
 ) -> dict:
     """
-    Get lookup data from the database (regions, projects, teams, statuses).
+    Get lookup data from the database (regions, projects, teams, statuses, task types).
 
     This tool retrieves reference data for dropdowns, validation, and queries.
-    Use this when users ask "what regions are there?" or "list all teams".
+    Use this when users ask "what regions are there?" or "list all teams" or "what task types exist?".
 
     IMPORTANT: lookup_type values are CASE-SENSITIVE and must be EXACTLY one of:
     - "Regions" (capital R, plural) - Get all regions/provinces
     - "Projects" (capital P, plural) - Get all projects
     - "Teams" (capital T, plural) - Get all teams with their project and region
     - "Statuses" (capital S, plural) - Get ticket statuses
+    - "TaskTypes" (capital T, capital T) - Get ticket task types (PM, TR, Other)
     - "All" (capital A) - Get all lookup types
     - None - Same as "All", gets everything
 
     Args:
-        lookup_type: MUST be exactly one of: "Regions", "Projects", "Teams", "Statuses", "All"
+        lookup_type: MUST be exactly one of: "Regions", "Projects", "Teams", "Statuses", "TaskTypes", "All"
                      DO NOT use lowercase like "region" or "teams" - it will return empty!
 
     Returns:
@@ -168,6 +169,7 @@ def get_lookups(
             - projects: List of {ProjectId, ProjectName}
             - teams: List of {TeamId, TeamName, ProjectName, RegionName}
             - statuses: List of {StatusId, StatusCode, StatusName, StatusColor}
+            - task_types: List of {TaskTypeId, TaskTypeName}
             - Message: "Success" or error description
 
     Example tool calls:
@@ -175,6 +177,7 @@ def get_lookups(
         - "List all teams" -> get_lookups(lookup_type="Teams")
         - "What projects can I filter by?" -> get_lookups(lookup_type="Projects")
         - "Show me ticket statuses" -> get_lookups(lookup_type="Statuses")
+        - "What task types are there?" -> get_lookups(lookup_type="TaskTypes")
         - "Show all lookup data" -> get_lookups(lookup_type="All")
     """
     try:
@@ -231,6 +234,8 @@ def get_lookups(
                     result["teams"] = data
                 elif "StatusId" in columns:
                     result["statuses"] = data
+                elif "TaskTypeId" in columns:
+                    result["task_types"] = data
                 else:
                     # Fallback: use index-based naming
                     if result_index < len(result_names):
@@ -246,7 +251,7 @@ def get_lookups(
         conn.close()
 
         # Log what we got
-        for key in ["regions", "projects", "teams", "statuses"]:
+        for key in ["regions", "projects", "teams", "statuses", "task_types"]:
             if key in result:
                 print(f"📋 [LOOKUPS] {key}: {len(result[key])} items")
 
@@ -278,6 +283,7 @@ def get_ticket_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     include_breakdown: bool = False,
+    task_type_names: Optional[str] = None,
     tool_context: "ToolContext" = None,
 ) -> dict:
     """
@@ -315,6 +321,13 @@ def get_ticket_summary(
         include_breakdown: If True, returns additional breakdown by region, project, team.
                           Use this for "X vs Others" comparisons or distribution charts.
                           Example: "Riyadh vs other regions" -> include_breakdown=True
+        task_type_names: Filter by ticket/task type. Optional.
+                         Valid values: "PM", "TR", "Other"
+                         Can be comma-separated: "PM,TR"
+                         PM = Preventive Maintenance tickets
+                         TR = Trouble Report tickets (reactive calls)
+                         Other = Miscellaneous tasks
+                         Example: "How many PMs completed?" -> task_type_names="PM"
 
     Returns:
         dict: Ticket summary containing:
@@ -353,6 +366,10 @@ def get_ticket_summary(
         - "Riyadh vs other regions" -> include_breakdown=True (then aggregate)
         - "Show tickets by region" -> include_breakdown=True
         - "Compare projects" -> include_breakdown=True
+        - "How many PM tickets?" -> task_type_names="PM"
+        - "TR calls this month" -> task_type_names="TR", month=3, year=2026
+        - "PM and TR tickets in January" -> task_type_names="PM,TR", month=1, year=2026
+        - "Completed PMs" -> task_type_names="PM"
 
     Note:
         The stored procedure enforces role-based access control:
@@ -363,7 +380,7 @@ def get_ticket_summary(
     try:
         logger.info("📊 Checking your ticket status...")
         # Debug: Log incoming parameters
-        print(f"🔍 [TOOL PARAMS] project_names={project_names}, team_names={team_names}, region_names={region_names}, month={month}, year={year}, include_breakdown={include_breakdown}")
+        print(f"🔍 [TOOL PARAMS] project_names={project_names}, team_names={team_names}, region_names={region_names}, month={month}, year={year}, include_breakdown={include_breakdown}, task_type_names={task_type_names}")
 
         # Get username from session state via tool_context
         username = None
@@ -434,6 +451,10 @@ def get_ticket_summary(
         if include_breakdown:
             params.append(1)
             param_markers.append('@IncludeBreakdown=?')
+
+        if task_type_names:
+            params.append(task_type_names)
+            param_markers.append('@TaskTypeNames=?')
 
         # Execute stored procedure
         sql = f"EXEC usp_Chatbot_GetTicketSummary {', '.join(param_markers)}"
@@ -525,6 +546,8 @@ def get_ticket_summary(
                 query_context_parts.append(f"region {region_names}")
             if month:
                 query_context_parts.append(f"month {month}")
+            if task_type_names:
+                query_context_parts.append(f"task type {task_type_names}")
             tool_context.state["last_query_context"] = " ".join(query_context_parts) if query_context_parts else "all tickets"
             logger.info("📝 Ticket data stored in session for chart requests")
 
@@ -555,6 +578,7 @@ def get_ticket_timeline(
     region_names: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    task_type_names: Optional[str] = None,
     tool_context: "ToolContext" = None,
 ) -> dict:
     """
@@ -578,6 +602,12 @@ def get_ticket_timeline(
         region_names: Filter by region name(s). Comma-separated for multiple.
         date_from: Start date in YYYY-MM-DD format. Defaults to last 12 months.
         date_to: End date in YYYY-MM-DD format. Defaults to today.
+        task_type_names: Filter by ticket/task type. Optional.
+                         Valid values: "PM", "TR", "Other"
+                         Can be comma-separated: "PM,TR"
+                         PM = Preventive Maintenance tickets
+                         TR = Trouble Report tickets (reactive calls)
+                         Other = Miscellaneous tasks
 
     Returns:
         dict: Timeline data containing:
@@ -593,10 +623,12 @@ def get_ticket_timeline(
         - "How many tickets were created last 3 months?" -> get_ticket_timeline(date_from="2025-12-01")
         - "Yearly ticket overview" -> get_ticket_timeline(period="year")
         - "Ticket trend for Maintenance team" -> get_ticket_timeline(team_names="Maintenance")
+        - "PM ticket trend" -> get_ticket_timeline(task_type_names="PM")
+        - "TR calls over time" -> get_ticket_timeline(task_type_names="TR")
     """
     try:
         logger.info("📈 Fetching ticket timeline...")
-        print(f"🔍 [TIMELINE] period={period}, projects={project_names}, teams={team_names}, regions={region_names}, from={date_from}, to={date_to}")
+        print(f"🔍 [TIMELINE] period={period}, projects={project_names}, teams={team_names}, regions={region_names}, from={date_from}, to={date_to}, task_types={task_type_names}")
 
         # Get username from session state
         username = None
@@ -636,6 +668,10 @@ def get_ticket_timeline(
         if date_to:
             params.append(date_to)
             param_markers.append('@DateTo=?')
+
+        if task_type_names:
+            params.append(task_type_names)
+            param_markers.append('@TaskTypeNames=?')
 
         sql = f"EXEC usp_Chatbot_GetTicketTimeline {', '.join(param_markers)}"
         logger.info("🔄 Querying ticket timeline...")
