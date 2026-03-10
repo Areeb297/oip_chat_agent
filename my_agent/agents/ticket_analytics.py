@@ -12,7 +12,6 @@ from google.adk.models.lite_llm import LiteLlm
 
 from ..tools.db_tools import get_ticket_summary, get_ticket_timeline, get_current_date, create_chart_from_session, get_lookups, get_pm_checklist_data
 from ..tools.chart_tools import (
-    create_chart,
     create_ticket_status_chart,
     create_completion_rate_gauge,
     create_tickets_over_time_chart,
@@ -243,19 +242,10 @@ If the user asks for a chart type you do NOT support (e.g., "heatmap", "radar", 
 - Suggest the closest alternative
 - Ask if they'd like to proceed with the alternative
 
-### 3. Direct Chart Tool (for custom calculations)
-- `create_chart` - Use this when you want to pass calculated/custom data directly
-  - You already have the data from get_ticket_summary response
-  - You can calculate derived values (e.g., non_suspended = total - suspended)
-  - Pass the data array directly to create_chart
-
-Example using create_chart directly:
-  - Agent knows from get_ticket_summary: TotalTickets=20, SuspendedTickets=5
-  - Agent calculates: non_suspended = 20 - 5 = 15
-  - Pass data array with category, count, color for each item
-- `create_completion_rate_gauge` - Gauge chart for completion rate
-- `create_tickets_over_time_chart` - Line chart for time trends
-- `create_project_comparison_chart` - Bar chart comparing projects
+### 3. Specialized Chart Tools
+- `create_completion_rate_gauge` - Gauge chart for completion rate percentage
+- `create_tickets_over_time_chart` - Area/line chart for time trends (reads from session)
+- `create_project_comparison_chart` - Bar chart comparing projects (reads from session)
 
 ## CRITICAL: When to Call Database vs Use Conversation Context
 
@@ -405,19 +395,28 @@ The chart card already shows the title, description, and key insights — your t
 3. In your response, include each chart output verbatim followed immediately by YOUR analysis
 4. End with an overall summary paragraph
 
-**IMPORTANT: Keep multi-chart responses to 2 charts. Only use 3 if the user explicitly asks for more.**
+**HARD LIMIT: Maximum 2 charts per response. NEVER generate 3 or 4 charts.**
+If the query only needs 1 chart, use 1. If it needs a second perspective, add 1 more. That's it.
 
-**Multi-chart scenario mappings (2 charts each):**
+**Multi-chart scenario mappings (exactly 2 charts each):**
 
 | User asks about... | Chart 1 | Chart 2 |
 |---|---|---|
-| "Project overview/status" | Status donut (create_ticket_status_chart) | Timeline trend (create_tickets_over_time_chart) |
+| "Project overview/status" | Status donut (create_chart_from_session) | Timeline trend (create_tickets_over_time_chart) |
 | "SLA analysis" | SLA breached vs within (create_chart_from_session) | SLA by project/team (create_breakdown_chart) |
+| "Completion rate analysis" | Completion rate gauge (create_chart_from_session with gauge) | Breakdown by project (create_breakdown_chart) |
 | "TR vs PM" | Task type distribution (create_chart_from_session) | Timeline by task type (create_tickets_over_time_chart) |
-| "Compare projects" | Total tickets comparison (create_project_comparison_chart) | Completion rates (create_chart_from_session) |
-| "Workload + trends" | Current distribution (create_ticket_status_chart) | Timeline (create_tickets_over_time_chart) |
+| "Compare projects" | Total tickets comparison (create_project_comparison_chart) | Completion rates (create_breakdown_chart) |
+| "Workload + trends" | Current distribution (create_chart_from_session) | Timeline (create_tickets_over_time_chart) |
 
-**Do NOT add extra charts beyond the mapping above.** For "project overview", generate exactly 2 charts (status + trend), NOT 3 or 4. Include completion rate and SLA info in the text summary instead.
+**Do NOT add extra charts beyond the mapping above.** Include additional metrics (SLA, rates) in text, not extra charts.
+
+**Always use session-aware chart tools** — they read data from session state automatically:
+- `create_chart_from_session()` — for status/metric charts (donut, bar, gauge)
+- `create_breakdown_chart()` — for project/region/team breakdowns
+- `create_ticket_status_chart()` — for status donut
+- `create_tickets_over_time_chart()` — for timeline trends
+- `create_project_comparison_chart()` — for cross-project comparison
 
 ## CRITICAL: Tool Chaining for NEW Chart Requests
 
@@ -468,7 +467,7 @@ Here's your ticket status distribution. You have 15 tickets total with a 47% com
 | Completion rate | GAUGE | create_completion_rate_gauge |
 | Tickets over time | LINE | create_tickets_over_time_chart |
 | Compare projects/teams | BAR | create_project_comparison_chart |
-| Custom data | AUTO | create_chart (auto-selects type) |
+| Completion rate by project | BAR | create_breakdown_chart(breakdown_type="project") |
 
 ## Tool Parameters
 The `get_ticket_summary` tool accepts:
@@ -786,14 +785,14 @@ Use this agent for questions like:
         # PM Checklist tools
         get_pm_checklist_data,
         create_pm_chart,
-        # Session-aware chart tools (PREFERRED - use breakdown data from session)
+        # Session-aware chart tools (read data from session state automatically)
         create_chart_from_session,
         create_breakdown_chart,  # SIMPLE: just pass breakdown_type="project"/"region"/"team"
-        # Direct chart tools (for custom data)
-        create_chart,
         create_ticket_status_chart,
         create_completion_rate_gauge,
         create_tickets_over_time_chart,
         create_project_comparison_chart,
+        # NOTE: create_chart is intentionally excluded — LLM passes malformed data to it.
+        # All ticket chart tools above read from session state automatically.
     ],
 )

@@ -159,9 +159,15 @@ BEGIN
     DECLARE @SelectedRoles TABLE (RoleId INT);
     DECLARE @FilterByRole BIT = 1;
 
-    IF @RoleNames IS NULL OR LTRIM(RTRIM(@RoleNames)) = 'All'
+    IF LTRIM(RTRIM(ISNULL(@RoleNames, ''))) = 'All'
     BEGIN
         SET @FilterByRole = 0;  -- No role filter — show all employees
+    END
+    ELSE IF @RoleNames IS NULL
+    BEGIN
+        -- Default: only field-level roles (Field Engineer=2, Resident Engineer=8)
+        INSERT INTO @SelectedRoles (RoleId) VALUES (2), (8);
+        SET @FilterByRole = 1;
     END
     ELSE
     BEGIN
@@ -232,7 +238,28 @@ BEGIN
              ELSE 0 END AS CompletionRate,
         SUM(CASE WHEN tt.Name = 'TR' THEN 1 ELSE 0 END) AS TRTickets,
         SUM(CASE WHEN tt.Name = 'PM' THEN 1 ELSE 0 END) AS PMTickets,
-        SUM(CASE WHEN tt.Name = 'Other' OR tt.Name IS NULL THEN 1 ELSE 0 END) AS OtherTickets
+        SUM(CASE WHEN tt.Name = 'Other' OR tt.Name IS NULL THEN 1 ELSE 0 END) AS OtherTickets,
+        -- Employee's primary role (highest priority across team assignments for this project)
+        (SELECT TOP 1 r2.Name
+         FROM dbo.TeamRoleUsers tru2
+         INNER JOIN dbo.TeamRoles tr2 ON tr2.Id = tru2.TeamRoleId
+         INNER JOIN dbo.Roles r2 ON r2.Id = tr2.RoleId
+         INNER JOIN dbo.Users u2 ON u2.Id = tru2.UserId
+         WHERE u2.EmployeeId = e.Id
+           AND tru2.IsActive = 1
+           AND tr2.IsActive = 1
+           AND tr2.TeamId IN (SELECT Id FROM dbo.Teams WHERE ProjectId = p.Id)
+         ORDER BY CASE r2.Id
+             WHEN 1 THEN 1  -- Administrator
+             WHEN 9 THEN 2  -- Operations Manager
+             WHEN 6 THEN 3  -- Project Manager
+             WHEN 7 THEN 4  -- Project Coordinator
+             WHEN 4 THEN 5  -- Supervisor
+             WHEN 5 THEN 6  -- Logistics Supervisor
+             WHEN 8 THEN 7  -- Resident Engineer
+             WHEN 2 THEN 8  -- Field Engineer
+             ELSE 9 END
+        ) AS RoleName
     FROM dbo.Tickets tk
     INNER JOIN dbo.Employees e ON e.Id = tk.EmployeeId
     INNER JOIN dbo.Teams tm ON tm.Id = tk.TeamId
@@ -255,7 +282,7 @@ BEGIN
       -- Date filters (use ReportedDate — the user-facing ticket date)
       AND (@FilterDateFrom IS NULL OR CAST(tk.ReportedDate AS DATE) >= @FilterDateFrom)
       AND (@FilterDateTo IS NULL OR CAST(tk.ReportedDate AS DATE) <= @FilterDateTo)
-    GROUP BY e.Id, e.FirstName, e.LastName, e.EmpId, tm.Name, p.Name, sp.Name
+    GROUP BY e.Id, e.FirstName, e.LastName, e.EmpId, tm.Name, p.Id, p.Name, sp.Name
     ORDER BY CompletedTickets DESC, TotalTickets DESC;
 
     -- =========================================

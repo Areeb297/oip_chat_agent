@@ -38,9 +38,10 @@ def _md_to_html(text: str) -> str:
 
     # Protect ALL <!--CHART_START-->...<!--CHART_END--> blocks from markdown transforms
     # (the italic regex would corrupt * inside JSON strings like "14*10GE")
+    # Use <!--CHARTHOLD:N--> as placeholder — HTML comments are invisible to markdown regexes
     chart_blocks = re.findall(r'<!--CHART_START-->.*?<!--CHART_END-->', text, re.DOTALL)
     for i, block in enumerate(chart_blocks):
-        text = text.replace(block, f"\x00__CHART_{i}__\x00", 1)
+        text = text.replace(block, f"<!--CHARTHOLD:{i}-->", 1)
 
     # Strip any leaked filter tags from responses
     text = re.sub(r'\[ACTIVE_(?:TEAM|PROJECT|REGION)_FILTER:\s*[^\]]*\]', '', text)
@@ -54,7 +55,7 @@ def _md_to_html(text: str) -> str:
 
     # Restore all chart blocks
     for i, block in enumerate(chart_blocks):
-        text = text.replace(f"\x00__CHART_{i}__\x00", block)
+        text = text.replace(f"<!--CHARTHOLD:{i}-->", block)
 
     return text.strip()
 
@@ -591,6 +592,10 @@ async def run_sse(request: RunSSERequest):
                 run_config=RunConfig(streaming_mode=stream_mode),
             ):
                 # Track agent transfers for status updates
+                # Debug: log all event authors to trace SequentialAgent sub-agent events
+                _evt_author = getattr(event, 'author', None)
+                if _evt_author and _evt_author != last_agent:
+                    print(f"[EVENT] author='{_evt_author}', content_parts={len(event.content.parts) if hasattr(event, 'content') and event.content and event.content.parts else 0}")
                 if hasattr(event, 'author') and event.author:
                     agent_name = event.author
                     if agent_name != last_agent:
@@ -602,12 +607,13 @@ async def run_sse(request: RunSSERequest):
                             "greeter": "Preparing response...",
                             "engineer_analytics": "Analyzing engineer performance...",
                             "inventory_analytics": "Checking inventory data...",
-                            "report_planner": "Analyzing report requirements...",
-                            "report_data_collector": "Fetching ticket, engineer & inventory data...",
-                            "report_builder": "Writing executive summary & building report...",
+                            "report_planner": "Step 1/3 — Analyzing report requirements...",
+                            "report_data_collector": "Step 2/3 — Fetching ticket, engineer & inventory data...",
+                            "report_builder": "Step 3/3 — Writing executive summary & building report...",
                             "report_generator": "Preparing your report...",
                         }
                         status = status_map.get(agent_name, "Working on it...")
+                        print(f"[STATUS] Agent transition: {agent_name} -> '{status}'")
                         yield f"data: {json.dumps({'status': status})}\n\n"
 
                 # Track tool calls for status updates
@@ -641,25 +647,29 @@ async def run_sse(request: RunSSERequest):
                                     "create_pm_chart": "Creating PM chart...",
                                     "create_engineer_chart": "Creating engineer chart...",
                                     "create_inventory_chart": "Creating inventory chart...",
-                                    "collect_report_data": "Fetching tickets, engineers, inventory & timeline data...",
-                                    "build_html_report": "Generating charts, tables & formatting PDF report...",
+                                    "collect_report_data": "Fetching tickets, engineer performance, inventory & timeline data...",
+                                    "build_html_report": "Generating charts, tables & formatting report...",
+                                    "report_generator": "Generating report — fetching data, analyzing metrics & building document...",
+                                    "transfer_to_agent": "Routing to specialist...",
                                 }
                                 status = tool_status_map.get(tool_name, "Processing...")
-                                logger.debug("[TOOL CALL] %s -> %s", tool_name, status)
+                                print(f"[STATUS] Tool call: {tool_name} -> '{status}'")
                                 yield f"data: {json.dumps({'status': status})}\n\n"
 
                         # ── Capture tool responses for status updates and chart output ──
                         if hasattr(part, 'function_response') and part.function_response:
                             resp_name = getattr(part.function_response, 'name', '')
 
-                            # Report tool progress messages
+                            # Report tool progress messages (shown after each tool completes)
                             report_tool_status = {
                                 "get_current_date": "Resolved date context...",
-                                "get_lookups": "Resolved project names...",
-                                "collect_report_data": "Data collected! Writing executive summary...",
-                                "build_html_report": "Report generated! Preparing preview...",
+                                "get_lookups": "Identified project data...",
+                                "collect_report_data": "All data collected! Writing executive summary & insights...",
+                                "build_html_report": "Report ready! Preparing preview...",
+                                "report_generator": "Report complete! Preparing preview...",
                             }
                             if resp_name in report_tool_status:
+                                print(f"[STATUS] Tool done: {resp_name} -> '{report_tool_status[resp_name]}'")
                                 yield f"data: {json.dumps({'status': report_tool_status[resp_name]})}\n\n"
                             if resp_name in CHART_TOOL_NAMES:
                                 resp_data = getattr(part.function_response, 'response', None)

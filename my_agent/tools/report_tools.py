@@ -61,7 +61,7 @@ def _exec_sp(cursor, sp_name: str, username: str, **kwargs) -> dict:
             param_markers.append(f'@{key}=?')
 
     sql = f"EXEC {sp_name} {', '.join(param_markers)}"
-    logger.info(f"[REPORT] Executing: {sql}")
+    print(f"  [REPORT SQL] {sql}  params={params[1:]}")  # skip username for brevity
     cursor.execute(sql, params)
 
     result_sets = []
@@ -275,12 +275,16 @@ def collect_report_data(
                 eng_filters = dict(common_filters)
                 if employee_names:
                     eng_filters["EmployeeNames"] = employee_names
+                # Pass RoleNames="All" for reports — we want all roles, SP now returns RoleName column
+                eng_filters["RoleNames"] = "All"
                 rs = _exec_sp(cursor, "usp_Chatbot_GetEngineerPerformance", username,
                               **eng_filters)
                 report_data["engineers"] = rs[0] if len(rs) > 0 else []
                 report_data["engineer_summary"] = rs[1][0] if len(rs) > 1 and rs[1] else {}
                 report_data["sections_collected"].append("engineers")
-                print(f"  [REPORT] engineers: {len(report_data['engineers'])} rows")
+                # Debug: show roles returned
+                roles_found = set(e.get("RoleName", "N/A") for e in report_data["engineers"])
+                print(f"  [REPORT] engineers: {len(report_data['engineers'])} rows, roles={roles_found}")
             except Exception as e:
                 logger.warning(f"[REPORT] engineers failed: {e}")
                 report_data["engineers_error"] = str(e)
@@ -1048,108 +1052,171 @@ def _build_task_type_section(num: int, report_data: dict) -> str:
 
 
 def _build_engineers_section(num: int, report_data: dict) -> str:
-    """Build the top engineers ranking table with chart (capped at 15)."""
+    """Build the team performance section with supervisors and field engineers separated."""
     engineers = report_data.get("engineers", [])
     if not engineers:
         return ""
 
-    # Filter out engineers with 0 tickets, sort by completed desc
+    # Filter out engineers with 0 tickets
     active_eng = [e for e in engineers if e.get("TotalTickets", 0) > 0]
     if not active_eng:
         return ""
 
-    sorted_eng = sorted(active_eng, key=lambda e: e.get("CompletedTickets", 0), reverse=True)
-    top = sorted_eng[:15]
+    # Separate by role: Supervisors/Team Leads vs Field Engineers
+    supervisor_roles = {"Supervisor", "Administrator", "Operations Manager",
+                        "Project Manager", "Project Coordinator", "Logistics Supervisor"}
+    field_roles = {"Field Engineer", "Resident Engineer"}
+
+    supervisors = []
+    field_engineers = []
+    for eng in active_eng:
+        role = eng.get("RoleName", "Field Engineer") or "Field Engineer"
+        if role in supervisor_roles:
+            supervisors.append(eng)
+        else:
+            field_engineers.append(eng)
+
+    # Sort each group by completed desc
+    supervisors = sorted(supervisors, key=lambda e: e.get("CompletedTickets", 0), reverse=True)
+    field_engineers = sorted(field_engineers, key=lambda e: e.get("CompletedTickets", 0), reverse=True)
 
     total_tickets = sum(e.get("TotalTickets", 0) for e in active_eng)
     total_completed = sum(e.get("CompletedTickets", 0) for e in active_eng)
     avg_rate = (total_completed / total_tickets * 100) if total_tickets > 0 else 0
 
-    # Description
-    desc = (f"Performance metrics for {len(active_eng)} active team members handling a combined "
-            f"{_fmt_num(total_tickets)} tickets with an overall completion rate of {avg_rate:.1f}%. "
-            f"Engineers are ranked by number of completed tickets.")
+    fe_count = len(field_engineers)
+    sv_count = len(supervisors)
+    desc = (f"Performance metrics for {len(active_eng)} active team members "
+            f"({sv_count} regional team lead{'s' if sv_count != 1 else ''}, "
+            f"{fe_count} field engineer{'s' if fe_count != 1 else ''}) "
+            f"handling a combined {_fmt_num(total_tickets)} tickets with an overall "
+            f"completion rate of {avg_rate:.1f}%.")
 
-    max_tickets = max(e.get("TotalTickets", 0) for e in top)
+    section_html = f'''<div class="section">
+    <div class="section-title"><span class="section-num">{num}</span> Team Performance</div>
+    <p class="section-desc">{desc}</p>
+'''
 
-    # Horizontal bar chart (top 8)
-    chart_bars = ""
-    eng_colors = ["#3b82f6", "#6366f1", "#8b5cf6", "#0ea5e9", "#14b8a6", "#22c55e", "#f59e0b", "#ef4444"]
-    for i, eng in enumerate(top[:8]):
-        name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
-        # Truncate long names
-        short_name = name[:16] + "..." if len(name) > 16 else name
-        total_e = eng.get("TotalTickets", 0)
-        completed_e = eng.get("CompletedTickets", 0)
-        pct = (total_e / max_tickets * 100) if max_tickets > 0 else 0
-        color = eng_colors[i % len(eng_colors)]
-        chart_bars += f'''        <div class="hbar-row">
+    # ── Subsection: Regional Team Leads / Supervisors ──
+    if supervisors:
+        sv_total = sum(e.get("TotalTickets", 0) for e in supervisors)
+        sv_completed = sum(e.get("CompletedTickets", 0) for e in supervisors)
+        sv_rate = (sv_completed / sv_total * 100) if sv_total > 0 else 0
+
+        sv_rows = ""
+        for i, eng in enumerate(supervisors, 1):
+            name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
+            role = eng.get("RoleName", "Supervisor")
+            region = eng.get("RegionName", "")
+            completed = eng.get("CompletedTickets", 0)
+            total_e = eng.get("TotalTickets", 0)
+            rate_val = (completed / total_e * 100) if total_e > 0 else 0
+            rate_color = "#22c55e" if rate_val >= 80 else "#f59e0b" if rate_val >= 50 else "#ef4444"
+            region_badge = f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(region)}</span>' if region else ""
+
+            sv_rows += f'''        <tr>
+            <td>{i}</td>
+            <td style="font-weight:600">{_esc(name)}{region_badge}</td>
+            <td><span style="color:#6366f1;font-weight:500">{_esc(role)}</span></td>
+            <td>{_fmt_num(total_e)}</td>
+            <td>{_fmt_num(completed)}</td>
+            <td><span style="color:{rate_color};font-weight:700">{rate_val:.1f}%</span></td>
+        </tr>\n'''
+
+        section_html += f'''    <div style="margin-top:16px">
+        <div style="font-weight:700;font-size:15px;color:#1e293b;margin-bottom:8px">
+            {num}.1 Regional Team Leads
+            <span style="font-weight:400;color:#64748b;font-size:13px">&mdash; {sv_count} lead{'s' if sv_count != 1 else ''}, {_fmt_num(sv_total)} tickets overseen, {sv_rate:.1f}% completion</span>
+        </div>
+    </div>
+    <table>
+        <thead><tr><th style="width:40px">#</th><th>Name</th><th>Role</th><th>Total</th><th>Completed</th><th>Rate</th></tr></thead>
+        <tbody>
+{sv_rows}        </tbody>
+    </table>
+'''
+
+    # ── Subsection: Field Engineers ──
+    if field_engineers:
+        top_fe = field_engineers[:15]
+        fe_total = sum(e.get("TotalTickets", 0) for e in field_engineers)
+        fe_completed = sum(e.get("CompletedTickets", 0) for e in field_engineers)
+        fe_rate = (fe_completed / fe_total * 100) if fe_total > 0 else 0
+        max_tickets = max(e.get("TotalTickets", 0) for e in top_fe)
+
+        # Horizontal bar chart (top 8 field engineers)
+        chart_bars = ""
+        eng_colors = ["#3b82f6", "#6366f1", "#8b5cf6", "#0ea5e9", "#14b8a6", "#22c55e", "#f59e0b", "#ef4444"]
+        for i, eng in enumerate(top_fe[:8]):
+            name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
+            short_name = name[:16] + "..." if len(name) > 16 else name
+            total_e = eng.get("TotalTickets", 0)
+            completed_e = eng.get("CompletedTickets", 0)
+            pct = (total_e / max_tickets * 100) if max_tickets > 0 else 0
+            color = eng_colors[i % len(eng_colors)]
+            chart_bars += f'''        <div class="hbar-row">
             <div class="hbar-label">{_esc(short_name)}</div>
             <div class="hbar-track"><div class="hbar-fill" style="width:{pct:.0f}%;background:{color}">{_fmt_num(completed_e)}/{_fmt_num(total_e)}</div></div>
             <div class="hbar-value">{_fmt_num(total_e)}</div>
         </div>\n'''
 
-    chart_html = f'''    <div class="chart-container">
-        <div class="chart-title">Figure {num}.1 &mdash; Ticket Assignment by Team Member (Completed / Total)</div>
+        fig_label = f"{num}.2" if supervisors else f"{num}.1"
+        chart_html = f'''    <div class="chart-container">
+        <div class="chart-title">Figure {fig_label} &mdash; Ticket Assignment by Field Engineer (Completed / Total)</div>
 {chart_bars}    </div>
 ''' if chart_bars else ""
 
-    # Table
-    table_rows = ""
-    for i, eng in enumerate(top, 1):
-        name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
-        completed = eng.get("CompletedTickets", 0)
-        total_e = eng.get("TotalTickets", 0)
-        rate = eng.get("CompletionRate", 0)
-        rate_val = float(rate) if rate else 0
-        # Recalculate if SP returned 0
-        if (rate_val == 0 or rate_val is None) and total_e > 0:
-            rate_val = (completed / total_e) * 100
-        rate_str = f"{rate_val:.1f}%"
+        fe_rows = ""
+        for i, eng in enumerate(top_fe, 1):
+            name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
+            region = eng.get("RegionName", "")
+            completed = eng.get("CompletedTickets", 0)
+            total_e = eng.get("TotalTickets", 0)
+            rate_val = (completed / total_e * 100) if total_e > 0 else 0
+            rate_color = "#22c55e" if rate_val >= 80 else "#f59e0b" if rate_val >= 50 else "#ef4444"
+            rank_html = f'<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:12px;font-weight:700;font-size:12px">{i}</span>' if i <= 3 else str(i)
+            region_badge = f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(region)}</span>' if region else ""
 
-        if rate_val >= 80:
-            rate_color = "#22c55e"
-        elif rate_val >= 50:
-            rate_color = "#f59e0b"
-        else:
-            rate_color = "#ef4444"
-
-        rank_html = f'<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:12px;font-weight:700;font-size:12px">{i}</span>' if i <= 3 else str(i)
-
-        table_rows += f'''        <tr>
+            fe_rows += f'''        <tr>
             <td>{rank_html}</td>
-            <td style="font-weight:600">{_esc(name)}</td>
+            <td style="font-weight:600">{_esc(name)}{region_badge}</td>
             <td>{_fmt_num(total_e)}</td>
             <td>{_fmt_num(completed)}</td>
-            <td><span style="color:{rate_color};font-weight:700">{rate_str}</span></td>
+            <td><span style="color:{rate_color};font-weight:700">{rate_val:.1f}%</span></td>
         </tr>\n'''
 
-    showing = f" (Top {len(top)} of {len(active_eng)})" if len(active_eng) > 15 else ""
+        showing = f" (Top {len(top_fe)} of {fe_count})" if fe_count > 15 else ""
+        sub_num = f"{num}.2" if supervisors else f"{num}.1"
+
+        section_html += f'''    <div style="margin-top:20px">
+        <div style="font-weight:700;font-size:15px;color:#1e293b;margin-bottom:8px">
+            {sub_num} Field Engineers{showing}
+            <span style="font-weight:400;color:#64748b;font-size:13px">&mdash; {fe_count} engineer{'s' if fe_count != 1 else ''}, {_fmt_num(fe_total)} tickets, {fe_rate:.1f}% completion</span>
+        </div>
+    </div>
+{chart_html}    <table>
+        <thead><tr><th style="width:50px">#</th><th>Engineer</th><th>Total</th><th>Completed</th><th>Rate</th></tr></thead>
+        <tbody>
+{fe_rows}        </tbody>
+    </table>
+'''
 
     # Insight
     insight = ""
-    if top:
-        best = top[0]
+    if avg_rate < 40:
+        insight = f'<div class="section-insight">&#9888; <strong>Low throughput:</strong> The overall completion rate of {avg_rate:.1f}% indicates significant backlog. Consider reviewing workload distribution and resource capacity.</div>'
+    elif field_engineers:
+        best = field_engineers[0]
         best_name = best.get("EmployeeName", best.get("EngineerName", "Unknown"))
         best_completed = best.get("CompletedTickets", 0)
         best_total = best.get("TotalTickets", 0)
         best_rate = (best_completed / best_total * 100) if best_total > 0 else 0
-        if avg_rate < 40:
-            insight = f'<div class="section-insight">&#9888; <strong>Low throughput:</strong> The overall completion rate of {avg_rate:.1f}% indicates significant backlog. Consider reviewing workload distribution and resource capacity.</div>'
-        else:
-            insight = f'<div class="section-insight">&#10003; <strong>Top performer:</strong> {_esc(best_name)} leads with {_fmt_num(best_completed)} completed tickets ({best_rate:.0f}% rate), handling {(best_total/total_tickets*100):.0f}% of the total workload.</div>'
+        insight = f'<div class="section-insight">&#10003; <strong>Top performer:</strong> {_esc(best_name)} leads with {_fmt_num(best_completed)} completed tickets ({best_rate:.0f}% rate), handling {(best_total/total_tickets*100):.0f}% of the total workload.</div>'
 
-    return f'''<div class="section">
-    <div class="section-title"><span class="section-num">{num}</span> Engineer Performance{showing}</div>
-    <p class="section-desc">{desc}</p>
-{chart_html}    <table>
-        <thead><tr><th style="width:50px">#</th><th>Engineer</th><th>Total</th><th>Completed</th><th>Rate</th></tr></thead>
-        <tbody>
-{table_rows}        </tbody>
-    </table>
-{insight}
+    section_html += f'''{insight}
 </div>
 '''
+    return section_html
 
 
 def _build_inventory_section(num: int, report_data: dict) -> str:

@@ -406,17 +406,21 @@ def create_chart(
     print(f"📊 [CHART CONFIG] type={chart_type}, series={[s['key'] for s in series]}, data_points={len(data)}")
     print(f"📊 [CHART JSON preview] {chart_json[:500]}")
 
-    # Determine figure number from session accumulator, then store
+    # Determine figure number from invocation-scoped counter, then store
     _fig_num = figure_number  # default from parameter
     if tool_context is not None:
         try:
-            existing = tool_context.state.get("last_chart_outputs") or []
-            if isinstance(existing, str):
-                existing = [existing]
-            _fig_num = len(existing) + 1  # auto-increment based on charts already created
+            # Use temp: prefix for invocation-scoped state (resets each request)
+            chart_count = tool_context.state.get("temp:chart_count") or 0
+            _fig_num = chart_count + 1
+            tool_context.state["temp:chart_count"] = _fig_num
             config["figureLabel"] = f"Figure {_fig_num}: {title}"
             chart_json = json.dumps(config, indent=2)  # re-serialize with correct label
             tool_context.state["last_chart_output"] = chart_json
+            # Also accumulate for multi-chart session fallback
+            existing = tool_context.state.get("last_chart_outputs") or []
+            if isinstance(existing, str):
+                existing = [existing]
             existing.append(chart_json)
             tool_context.state["last_chart_outputs"] = existing
         except Exception:
@@ -569,17 +573,19 @@ def create_completion_rate_gauge(
         }
     }
 
-    # Determine figure number from session accumulator, then store
+    # Determine figure number from invocation-scoped counter, then store
     _fig_num = 1
     if tool_context is not None:
         try:
-            existing = tool_context.state.get("last_chart_outputs") or []
-            if isinstance(existing, str):
-                existing = [existing]
-            _fig_num = len(existing) + 1
+            chart_count = tool_context.state.get("temp:chart_count") or 0
+            _fig_num = chart_count + 1
+            tool_context.state["temp:chart_count"] = _fig_num
             config["figureLabel"] = f"Figure {_fig_num}: {title}"
             chart_json = json.dumps(config, indent=2)
             tool_context.state["last_chart_output"] = chart_json
+            existing = tool_context.state.get("last_chart_outputs") or []
+            if isinstance(existing, str):
+                existing = [existing]
             existing.append(chart_json)
             tool_context.state["last_chart_outputs"] = existing
         except Exception:
@@ -758,7 +764,8 @@ def create_breakdown_chart(
                        - "project" or "by_project" - Chart by project
                        - "team" or "by_team" - Chart by team
         chart_type: Chart type - "bar" or "pie" (default: "bar")
-        metric: Which metric to chart - "TotalTickets", "OpenTickets", "CompletedTickets"
+        metric: Which metric to chart - "TotalTickets", "OpenTickets", "CompletedTickets",
+                "CompletionRate" (derived: completed/total * 100)
                 (default: "TotalTickets")
         title: Custom title (auto-generated if not provided)
         tool_context: ADK ToolContext for session access
@@ -824,7 +831,13 @@ def create_breakdown_chart(
     chart_data = []
     for item in breakdown_data:
         name = item.get(name_key, "Unknown")
-        value = item.get(metric, 0)
+        # Support derived metrics
+        if metric.lower() in ("completionrate", "completion_rate"):
+            total = item.get("TotalTickets", 0) or 0
+            completed = item.get("CompletedTickets", 0) or 0
+            value = round((completed / total * 100), 1) if total > 0 else 0.0
+        else:
+            value = item.get(metric, 0)
         # Handle potential Decimal values
         if hasattr(value, 'as_tuple'):
             value = float(value)
