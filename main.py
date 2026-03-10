@@ -572,6 +572,7 @@ async def run_sse(request: RunSSERequest):
             chart_tool_called = False  # When True, buffer text instead of streaming
             captured_chart_html = ""  # Chart tool output captured from function_response
             captured_report_html = "" # Report HTML captured from build_html_report response
+            report_tool_called = False  # Track if report_generator was invoked this request
             streamed_text = ""       # text already sent to client via partial chunks
             final_response_text = "" # complete text from the final event (for DB)
 
@@ -627,6 +628,9 @@ async def run_sse(request: RunSSERequest):
                                 if tool_name in CHART_TOOL_NAMES:
                                     chart_tool_called = True
                                     print(f"[STREAM] Chart tool '{tool_name}' detected via function_call — buffering response")
+                                # Detect report generator call
+                                if tool_name == "report_generator":
+                                    report_tool_called = True
                                 tool_status_map = {
                                     "search_oip_documents": "Searching documentation...",
                                     "get_ticket_summary": "Fetching your tickets...",
@@ -861,7 +865,8 @@ async def run_sse(request: RunSSERequest):
                     print(f"[REPORT INJECT] Extracted report HTML from raw_text ({len(report_html_str)} chars)")
             # Fallback: read from session state (when report_generator runs as AgentTool,
             # internal tool responses aren't visible in the event stream)
-            if not report_html_str:
+            # ONLY use this fallback if report_generator was actually called this request
+            if not report_html_str and report_tool_called:
                 stored_report = s_state.get("last_report_html")
                 if stored_report and isinstance(stored_report, str) and len(stored_report) > 100:
                     report_html_str = stored_report
