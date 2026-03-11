@@ -697,38 +697,6 @@ DB_PASSWORD=...            # Optional if using Windows auth
    UNDERSTAND → RETRIEVE → VALIDATE → SYNTHESIZE → FORMAT
    ```
 
-3. **Structured Instruction Template**:
-   - **Role/Persona**: Who the agent is
-   - **Capabilities**: What tools are available and when to use each
-   - **Routing Rules**: When to delegate (for coordinators)
-   - **Output Format**: HTML structure, color codes, response patterns
-   - **Constraints/Guardrails**: What NOT to do (never expose DB columns, etc.)
-   - **Examples**: Concrete input/output pairs for common scenarios
-
-4. **Dynamic State Injection**: Use `{state_key}` placeholders in instructions to inject session state at runtime:
-   ```python
-   instruction="You are helping {username} who has the role {userRole}."
-   ```
-
-5. **Guardrails in Every Agent Prompt**:
-   - Never expose internal terms (ACTIVE_*_FILTER, DB columns, stored procedure names)
-   - Never hallucinate data — only use tool results
-   - Always use HTML output (never markdown)
-   - Color-code status values consistently
-
-### Anti-Patterns to Avoid
-
-| Anti-Pattern | Why It's Bad | Do Instead |
-|-------------|-------------|------------|
-| Monolithic agent with many tools | LLM gets confused choosing between 20+ tools | Split into focused sub-agents |
-| Hardcoded routing logic | Brittle, can't handle edge cases | Use LLM-driven delegation |
-| LLM doing math/aggregation | LLMs make arithmetic errors | Put calculations in tool code |
-| Overly long prompts (500+ lines) | Dilutes important instructions | Break into sections, use examples sparingly |
-| Exposing raw DB errors to users | Confusing UX, security risk | Catch errors, return friendly messages |
-| Storing request-scoped data in session | Timing issues with ADK state | Use filter injection in message text |
-| Synchronous tools with I/O | Blocks parallel tool execution | Use `async def` for I/O-bound tools |
-| Generic tool names (`do_stuff()`) | LLM can't figure out when to use it | Descriptive names: `get_ticket_summary()` |
-
 ### Chart Output Contract
 
 All chart tools return this format for frontend parsing:
@@ -757,47 +725,6 @@ All chart tools return this format for frontend parsing:
 | Suspended/Warning | Orange | `#f59e0b` |
 | Pending Approval | Purple | `#8b5cf6` |
 | SLA Breached/Error | Red | `#ef4444` |
-
-### Testing Agents
-
-```bash
-# Quick smoke test — verify agent imports
-python -c "from my_agent import root_agent; print(root_agent)"
-
-# Interactive testing via ADK web UI
-adk web my_agent
-
-# Test specific tool
-python -c "from my_agent.tools.db_tools import get_ticket_summary; print(get_ticket_summary.__doc__)"
-
-# Run the full server
-python main.py
-```
-
-For regression testing, consider ADK's `.test.json` format:
-```json
-{
-  "name": "ticket_query_test",
-  "turns": [
-    {
-      "query": "How many open tickets do I have?",
-      "expected_tool_use": ["get_ticket_summary"],
-      "reference": "HTML response with ticket counts"
-    }
-  ]
-}
-```
-
-## Dependencies
-
-**Backend (Python)**:
-- `google-adk` — Agent orchestration (core framework)
-- `fastapi`, `uvicorn` — REST API + SSE streaming
-- `faiss-cpu` — Vector similarity search
-- `pyodbc` — SQL Server connectivity (ODBC Driver 17)
-- `PyMuPDF`, `python-docx` — Document parsing for RAG ingestion
-- `pydantic` — Data validation and models
-- `litellm` — OpenRouter integration for embeddings + fallback LLMs
 
 ## Data Flow Examples
 

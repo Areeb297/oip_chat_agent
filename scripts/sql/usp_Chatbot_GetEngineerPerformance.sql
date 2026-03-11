@@ -222,6 +222,7 @@ BEGIN
     -- RESULT SET 1: ENGINEER ROWS
     -- =========================================
     SELECT
+        e.Id AS EmployeeId,
         LTRIM(RTRIM(e.FirstName + ' ' + ISNULL(e.LastName, ''))) AS EngineerName,
         e.EmpId AS EmployeeCode,
         tm.Name AS TeamName,

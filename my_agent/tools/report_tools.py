@@ -1051,6 +1051,50 @@ def _build_task_type_section(num: int, report_data: dict) -> str:
 '''
 
 
+def _consolidate_engineers(engineers: list) -> list:
+    """Consolidate duplicate engineer rows (same person, different regions) into one row.
+
+    The SP groups by (EmployeeId, RegionName), so an engineer with tickets in
+    multiple regions appears multiple times. This merges them into a single row
+    with aggregated ticket counts and a list of all regions they cover.
+
+    Uses EmployeeCode as the unique key (falls back to EngineerName if missing).
+    This prevents merging different people who share the same name (e.g. two
+    different "Administrator" accounts across projects).
+    """
+    by_key = {}
+    for eng in engineers:
+        # Use EmployeeId as unique key — it's the DB primary key per employee
+        # Falls back to EmployeeCode, then EngineerName
+        emp_id = eng.get("EmployeeId", "")
+        emp_code = eng.get("EmployeeCode", "")
+        name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
+        key = str(emp_id) if emp_id else (emp_code if emp_code else name)
+
+        if key in by_key:
+            merged = by_key[key]
+            # Sum ticket counts
+            for field in ("TotalTickets", "CompletedTickets", "OpenTickets",
+                          "SuspendedTickets", "SLABreached", "TRTickets",
+                          "PMTickets", "OtherTickets"):
+                merged[field] = merged.get(field, 0) + eng.get(field, 0)
+            # Recalculate completion rate
+            total = merged.get("TotalTickets", 0)
+            completed = merged.get("CompletedTickets", 0)
+            merged["CompletionRate"] = round(completed / total * 100, 2) if total > 0 else 0
+            # Collect regions
+            region = eng.get("RegionName", "")
+            if region and region not in merged["_regions"]:
+                merged["_regions"].append(region)
+        else:
+            region = eng.get("RegionName", "")
+            entry = dict(eng)
+            entry["_regions"] = [region] if region else []
+            by_key[key] = entry
+
+    return list(by_key.values())
+
+
 def _build_engineers_section(num: int, report_data: dict) -> str:
     """Build the team performance section with supervisors and field engineers separated."""
     engineers = report_data.get("engineers", [])
@@ -1061,6 +1105,9 @@ def _build_engineers_section(num: int, report_data: dict) -> str:
     active_eng = [e for e in engineers if e.get("TotalTickets", 0) > 0]
     if not active_eng:
         return ""
+
+    # Consolidate duplicate rows (same person across multiple regions)
+    active_eng = _consolidate_engineers(active_eng)
 
     # Separate by role: Supervisors/Team Leads vs Field Engineers
     supervisor_roles = {"Supervisor", "Administrator", "Operations Manager",
@@ -1107,16 +1154,22 @@ def _build_engineers_section(num: int, report_data: dict) -> str:
         for i, eng in enumerate(supervisors, 1):
             name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
             role = eng.get("RoleName", "Supervisor")
-            region = eng.get("RegionName", "")
+            regions = eng.get("_regions", [])
+            if not regions:
+                region = eng.get("RegionName", "")
+                regions = [region] if region else []
             completed = eng.get("CompletedTickets", 0)
             total_e = eng.get("TotalTickets", 0)
             rate_val = (completed / total_e * 100) if total_e > 0 else 0
             rate_color = "#22c55e" if rate_val >= 80 else "#f59e0b" if rate_val >= 50 else "#ef4444"
-            region_badge = f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(region)}</span>' if region else ""
+            region_badges = "".join(
+                f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(r)}</span>'
+                for r in regions if r
+            )
 
             sv_rows += f'''        <tr>
             <td>{i}</td>
-            <td style="font-weight:600">{_esc(name)}{region_badge}</td>
+            <td style="font-weight:600">{_esc(name)}{region_badges}</td>
             <td><span style="color:#6366f1;font-weight:500">{_esc(role)}</span></td>
             <td>{_fmt_num(total_e)}</td>
             <td>{_fmt_num(completed)}</td>
@@ -1169,17 +1222,23 @@ def _build_engineers_section(num: int, report_data: dict) -> str:
         fe_rows = ""
         for i, eng in enumerate(top_fe, 1):
             name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
-            region = eng.get("RegionName", "")
+            regions = eng.get("_regions", [])
+            if not regions:
+                region = eng.get("RegionName", "")
+                regions = [region] if region else []
             completed = eng.get("CompletedTickets", 0)
             total_e = eng.get("TotalTickets", 0)
             rate_val = (completed / total_e * 100) if total_e > 0 else 0
             rate_color = "#22c55e" if rate_val >= 80 else "#f59e0b" if rate_val >= 50 else "#ef4444"
             rank_html = f'<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:12px;font-weight:700;font-size:12px">{i}</span>' if i <= 3 else str(i)
-            region_badge = f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(region)}</span>' if region else ""
+            region_badges = "".join(
+                f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(r)}</span>'
+                for r in regions if r
+            )
 
             fe_rows += f'''        <tr>
             <td>{rank_html}</td>
-            <td style="font-weight:600">{_esc(name)}{region_badge}</td>
+            <td style="font-weight:600">{_esc(name)}{region_badges}</td>
             <td>{_fmt_num(total_e)}</td>
             <td>{_fmt_num(completed)}</td>
             <td><span style="color:{rate_color};font-weight:700">{rate_val:.1f}%</span></td>
