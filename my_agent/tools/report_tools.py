@@ -138,7 +138,22 @@ def collect_report_data(
         if not username:
             return {"status": "error", "Message": "No username in session. Please log in first."}
 
+        # ── Enforce active UI filters from session state ──
+        # These override whatever the LLM planner passed, ensuring reports
+        # always respect the user's dropdown selections.
+        active_project = tool_context.state.get("projectCode") if tool_context else None
+        active_team = tool_context.state.get("team") if tool_context else None
+        active_region = tool_context.state.get("region") if tool_context else None
+
+        if active_project:
+            project_names = active_project
+        if active_team:
+            team_names = active_team
+        if active_region:
+            region_names = active_region
+
         print(f"[REPORT COLLECT] type={report_type}, projects={project_names}, "
+              f"teams={team_names}, regions={region_names}, "
               f"month={month}, year={year}, sections={sections}")
 
         # Determine which sections to collect
@@ -194,11 +209,13 @@ def collect_report_data(
                               IncludeBreakdown=1, **common_filters)
                 report_data["ticket_summary"] = rs[0] if len(rs) > 0 else []
                 report_data["ticket_breakdown"] = rs[1] if len(rs) > 1 else []
-                # Summary row (last result set usually)
-                for rs_idx in range(len(rs) - 1, -1, -1):
-                    if rs[rs_idx] and any("TotalTickets" in r for r in rs[rs_idx]):
-                        report_data["ticket_totals"] = rs[rs_idx][0] if rs[rs_idx] else {}
-                        break
+                # Summary row is ALWAYS rs[0] (first result set from SP)
+                # rs[1..3] are breakdowns by region/project/team — each row also
+                # has "TotalTickets" but those are per-group subtotals, not the grand total.
+                if rs[0] and any("TotalTickets" in r for r in rs[0]):
+                    report_data["ticket_totals"] = rs[0][0]
+                else:
+                    report_data["ticket_totals"] = {}
                 report_data["sections_collected"].append("tickets")
                 print(f"  [REPORT] tickets: {len(report_data.get('ticket_summary', []))} rows")
             except Exception as e:
@@ -404,6 +421,11 @@ def build_html_report(
         report_data = tool_context.state.get("report_data")
         if not report_data:
             return {"status": "error", "Message": "No report data in session. Run collect_report_data first."}
+
+        # Auto-correct title if filters are active but title says "All Projects"
+        if report_data.get("project_names") and "all project" in title.lower():
+            project_label = report_data["project_names"]
+            title = f"{project_label} Project Report"
 
         print(f"[REPORT BUILD] title={title}, sections={report_data.get('sections_collected', [])}")
 

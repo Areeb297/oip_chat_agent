@@ -44,23 +44,40 @@ and produce a structured plan that tells the Data Collector what to fetch.
 STEPS:
 1. Call get_current_date() to know today's date.
 2. Call get_lookups(lookup_type="Projects") to get the list of available projects.
-3. Parse the user's request and MATCH any mentioned project name/abbreviation
+3. **CRITICAL — Parse filter tags from the user's message.** The message may contain
+   system-injected filter tags that MUST be used as report filters:
+   - `[ACTIVE_PROJECT_FILTER: ProjectName]` → use as project_names
+   - `[ACTIVE_TEAM_FILTER: TeamName]` → use as team_names
+   - `[ACTIVE_REGION_FILTER: RegionName]` → use as region_names
+   These tags represent the user's active UI filter selections and take PRIORITY.
+   ALWAYS extract and apply them. NEVER ignore these tags.
+4. Parse the user's request text and MATCH any mentioned project name/abbreviation
    against the actual project names from step 2.
    - Example: user says "ANB" → match to "Arab National Bank" from the lookup list.
    - Example: user says "Barclays" → match to the full project name from the lookup list.
    - ALWAYS use the EXACT project name as returned by get_lookups, never abbreviations.
-4. Determine:
+   - If a filter tag already provides a project/team/region, use THAT value.
+     The filter tag value should be matched against lookups for the exact name.
+5. Determine:
    - report_type: "project" | "engineer" | "inventory" | "custom"
-   - project_names: the EXACT full project name(s) from the lookup
-   - team_names, region_names, employee_names: any filters
+   - project_names: the EXACT full project name(s) from the lookup (or from filter tag)
+   - team_names, region_names, employee_names: any filters (including from filter tags)
    - month, year, date_from, date_to: time period
    - sections: which data sections to include
-5. Output a JSON plan.
+6. Output a JSON plan.
+
+FILTER TAG EXAMPLES:
+- Message: `[ACTIVE_PROJECT_FILTER: Saudi Awwal Bank] Generate a project report`
+  → project_names = "Saudi Awwal Bank", title = "Saudi Awwal Bank Project Report"
+- Message: `[ACTIVE_TEAM_FILTER: Central] [ACTIVE_PROJECT_FILTER: ANB] Generate report`
+  → project_names = match "ANB" to full name from lookups, team_names = "Central"
+- Message: `[ACTIVE_REGION_FILTER: Riyadh] Generate report`
+  → region_names = "Riyadh"
 
 DEFAULTS:
 - If no date/period specified, use ALL TIME (leave month, year, date_from, date_to as null). Do NOT default to current month.
 - Only set month/year if the user EXPLICITLY mentions a specific month or period (e.g., "for February", "this month", "last quarter").
-- If no project specified, leave project_names empty (all projects).
+- If no project specified AND no [ACTIVE_PROJECT_FILTER] tag, leave project_names empty (all projects).
 - If report type is unclear, default to "project".
 
 SECTION OPTIONS:
@@ -220,7 +237,8 @@ RULES:
 - Always call build_html_report() with executive_summary, insights, AND discussion — do NOT skip any.
 - Keep the chat summary under 6 lines.
 - Use HTML tags, not markdown.
-- NEVER expose internal terms (session state, tool names, database columns).""",
+- NEVER expose internal terms (session state, tool names, database columns).
+- NEVER mention ACTIVE_PROJECT_FILTER, ACTIVE_TEAM_FILTER, ACTIVE_REGION_FILTER or any internal system tags in your response.""",
     description="Generates the final HTML report and provides a summary",
 )
 

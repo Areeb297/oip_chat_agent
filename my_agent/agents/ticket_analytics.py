@@ -227,7 +227,7 @@ If the user just says "chart" without specifying type, pick the most appropriate
 | "ticket status breakdown" | ["open", "completed", "suspended", "pending"] | "donut" |
 | "pie chart of ticket status" | ["open", "completed", "suspended", "pending"] | "pie" |
 | "donut chart of ticket status" | ["open", "completed", "suspended", "pending"] | "donut" |
-| "completion rate" | ["completion_rate"] | "gauge" |
+| "completion rate" | ["completed", "remaining"] | "donut" |
 | "open vs completed" | ["open", "completed"] | "bar" |
 | "remaining work" | ["completed", "remaining"] | "bar" |
 | "workload" | ["open", "pending", "suspended"] | "bar" |
@@ -235,7 +235,8 @@ If the user just says "chart" without specifying type, pick the most appropriate
 
 ## Supported Chart Types
 
-You support these chart types: **bar**, **stacked bar**, **donut**, **pie**, **line**, **area**, **gauge**, **bubble**, and **scatter**.
+You support these chart types: **bar**, **stacked bar**, **donut**, **pie**, **line**, **area**, **bubble**, and **scatter**.
+AVOID using gauge charts — they only show a single number and provide little analytical value. Use donut or bar charts instead.
 
 If the user asks for a chart type you do NOT support (e.g., "heatmap", "radar", "treemap"), respond like this:
 - Acknowledge what they asked for
@@ -243,7 +244,6 @@ If the user asks for a chart type you do NOT support (e.g., "heatmap", "radar", 
 - Ask if they'd like to proceed with the alternative
 
 ### 3. Specialized Chart Tools
-- `create_completion_rate_gauge` - Gauge chart for completion rate percentage
 - `create_tickets_over_time_chart` - Area/line chart for time trends (reads from session)
 - `create_project_comparison_chart` - Bar chart comparing projects (reads from session)
 
@@ -312,14 +312,14 @@ Agent ACTION 2: create_chart_from_session(
     title="Ticket Status Distribution"
 )
 
-### Example 4: Completion Rate Gauge
+### Example 4: Completion Rate
 
 **User:** "What's my completion rate?"
 
 Agent ACTION 1: get_ticket_summary()
 Agent ACTION 2: create_chart_from_session(
-    metrics=["completion_rate"],
-    chart_type="gauge",
+    metrics=["completed", "remaining"],
+    chart_type="donut",
     title="Completion Rate"
 )
 
@@ -403,8 +403,9 @@ If the query only needs 1 chart, use 1. If it needs a second perspective, add 1 
 | User asks about... | Chart 1 | Chart 2 |
 |---|---|---|
 | "Project overview/status" | Status donut (create_chart_from_session) | Timeline trend (create_tickets_over_time_chart) |
-| "SLA analysis" | SLA breached vs within (create_chart_from_session) | SLA by project/team (create_breakdown_chart) |
-| "Completion rate analysis" | Completion rate gauge (create_chart_from_session with gauge) | Breakdown by project (create_breakdown_chart) |
+| "SLA analysis" | SLA breached vs within bar (create_chart_from_session) | SLA by project/team (create_breakdown_chart) |
+| "Completion rate analysis" | Completed vs remaining donut (create_chart_from_session with donut) | Breakdown by project (create_breakdown_chart) |
+| "Tickets analysis and SLA" | Ticket status donut (create_chart_from_session with donut) | SLA breached vs within bar (create_chart_from_session) |
 | "TR vs PM" | Task type distribution (create_chart_from_session) | Timeline by task type (create_tickets_over_time_chart) |
 | "Compare projects" | Total tickets comparison (create_project_comparison_chart) | Completion rates (create_breakdown_chart) |
 | "Workload + trends" | Current distribution (create_chart_from_session) | Timeline (create_tickets_over_time_chart) |
@@ -412,7 +413,7 @@ If the query only needs 1 chart, use 1. If it needs a second perspective, add 1 
 **Do NOT add extra charts beyond the mapping above.** Include additional metrics (SLA, rates) in text, not extra charts.
 
 **Always use session-aware chart tools** — they read data from session state automatically:
-- `create_chart_from_session()` — for status/metric charts (donut, bar, gauge)
+- `create_chart_from_session()` — for status/metric charts (donut, bar, pie)
 - `create_breakdown_chart()` — for project/region/team breakdowns
 - `create_ticket_status_chart()` — for status donut
 - `create_tickets_over_time_chart()` — for timeline trends
@@ -464,7 +465,7 @@ Here's your ticket status distribution. You have 15 tickets total with a 47% com
 | "pie chart of ticket status" | PIE | create_chart_from_session with chart_type="pie" |
 | "donut chart of ticket status" | DONUT | create_chart_from_session with chart_type="donut" |
 | Ticket status breakdown (no type specified) | DONUT | create_ticket_status_chart |
-| Completion rate | GAUGE | create_completion_rate_gauge |
+| Completion rate | DONUT | create_chart_from_session with metrics=["completed","remaining"], chart_type="donut" |
 | Tickets over time | LINE | create_tickets_over_time_chart |
 | Compare projects/teams | BAR | create_project_comparison_chart |
 | Completion rate by project | BAR | create_breakdown_chart(breakdown_type="project") |

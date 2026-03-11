@@ -186,11 +186,12 @@ BEGIN
         SUM(CASE WHEN t.CallStatusId = 9 THEN 1 ELSE 0 END) AS SuspendedTickets,
         SUM(CASE WHEN lc.Name IN ('Completed', 'Closed') THEN 1 ELSE 0 END) AS CompletedTickets,
         SUM(CASE WHEN t.ApprovalStatusId = 15 AND t.CallStatusId = 18 THEN 1 ELSE 0 END) AS PendingApproval,  -- ✅ FIXED: Added CallStatusId = 18
-        SUM(CASE 
-            WHEN t.CallStatusId != 9 
+        SUM(CASE
+            WHEN t.SLAId IS NOT NULL
+             AND t.CallStatusId != 9
              AND ISNULL(lc.Name,'') NOT IN ('Completed', 'Closed')
-             AND DATEDIFF(DAY, t.CreatedAt, GETDATE()) > 1 
-            THEN 1 ELSE 0 
+             AND DATEDIFF(DAY, t.CreatedAt, GETDATE()) > 1
+            THEN 1 ELSE 0
         END) AS SLABreached,
         CAST(
             CASE WHEN COUNT(*) > 0 

@@ -195,17 +195,28 @@ def generate_insights(data: List[Dict], y_keys: List[str], chart_type: str) -> L
         min_category = data[min_idx].get(x_key, "Unknown")
 
         # Format insights based on chart type
-        if chart_type == ChartType.PIE.value:
-            # For pie charts, show percentages
+        if chart_type in [ChartType.PIE.value, ChartType.DONUT.value]:
+            # For pie/donut charts, show percentages
             max_pct = (max_val / total * 100) if total > 0 else 0
-            insights.append(f"Largest segment: {max_category} ({max_pct:.1f}%)")
+            insights.append(f"Largest segment: {max_category} ({max_val:,.0f}, {max_pct:.1f}%)")
             if len(values) > 1 and min_val != max_val:
                 min_pct = (min_val / total * 100) if total > 0 else 0
-                insights.append(f"Smallest segment: {min_category} ({min_pct:.1f}%)")
+                insights.append(f"Smallest segment: {min_category} ({min_val:,.0f}, {min_pct:.1f}%)")
+            # Add concentration insight
+            if max_pct > 80 and len(values) > 2:
+                insights.append(f"{max_category} dominates at {max_pct:.0f}% of total")
+            # Add non-zero category count
+            non_zero = sum(1 for v in values if v > 0)
+            if non_zero < len(values):
+                insights.append(f"{non_zero} of {len(values)} categories have activity")
         else:
-            insights.append(f"Highest: {max_category} ({max_val})")
+            insights.append(f"Highest: {max_category} ({max_val:,.0f})")
             if len(values) > 1 and min_val != max_val:
-                insights.append(f"Lowest: {min_category} ({min_val})")
+                insights.append(f"Lowest: {min_category} ({min_val:,.0f})")
+            # Add range insight for bar/line with 3+ items
+            if len(values) >= 3:
+                spread = max_val - min_val
+                insights.append(f"Range: {spread:,.0f} (from {min_val:,.0f} to {max_val:,.0f})")
 
     # Add summary stats - but only if they make sense
     # Detect binary "X vs Non-X" comparisons where average is meaningless
@@ -233,7 +244,7 @@ def generate_insights(data: List[Dict], y_keys: List[str], chart_type: str) -> L
 
     insights.append(f"Total: {total:,.0f}")
 
-    return insights[:4]  # Max 4 insights
+    return insights[:5]  # Max 5 insights
 
 
 def generate_description(data: List[Dict], y_keys: List[str], chart_type: str, title: str) -> str:
