@@ -608,10 +608,10 @@ async def run_sse(request: RunSSERequest):
                             "greeter": "Preparing response...",
                             "engineer_analytics": "Analyzing engineer performance...",
                             "inventory_analytics": "Checking inventory data...",
-                            "report_planner": "Step 1/3 — Analyzing report requirements...",
-                            "report_data_collector": "Step 2/3 — Fetching ticket, engineer & inventory data...",
-                            "report_builder": "Step 3/3 — Writing executive summary & building report...",
-                            "report_generator": "Preparing your report...",
+                            "report_planner": "Step 1/3 — Analyzing your report request & resolving project details...",
+                            "report_data_collector": "Step 2/3 — Querying ticket, engineer & inventory databases...",
+                            "report_builder": "Step 3/3 — Crafting executive summary, insights & formatting report...",
+                            "report_generator": "Initializing report pipeline...",
                         }
                         status = status_map.get(agent_name, "Working on it...")
                         print(f"[STATUS] Agent transition: {agent_name} -> '{status}'")
@@ -651,9 +651,9 @@ async def run_sse(request: RunSSERequest):
                                     "create_pm_chart": "Creating PM chart...",
                                     "create_engineer_chart": "Creating engineer chart...",
                                     "create_inventory_chart": "Creating inventory chart...",
-                                    "collect_report_data": "Fetching tickets, engineer performance, inventory & timeline data...",
-                                    "build_html_report": "Generating charts, tables & formatting report...",
-                                    "report_generator": "Generating report — fetching data, analyzing metrics & building document...",
+                                    "collect_report_data": "Querying databases — tickets, engineers, inventory & timeline...",
+                                    "build_html_report": "Building KPI cards, tables & formatting final document...",
+                                    "report_generator": "Starting report generation pipeline...",
                                     "transfer_to_agent": "Routing to specialist...",
                                 }
                                 status = tool_status_map.get(tool_name, "Processing...")
@@ -666,11 +666,11 @@ async def run_sse(request: RunSSERequest):
 
                             # Report tool progress messages (shown after each tool completes)
                             report_tool_status = {
-                                "get_current_date": "Resolved date context...",
-                                "get_lookups": "Identified project data...",
-                                "collect_report_data": "All data collected! Writing executive summary & insights...",
-                                "build_html_report": "Report ready! Preparing preview...",
-                                "report_generator": "Report complete! Preparing preview...",
+                                "get_current_date": "Date context resolved — determining report period...",
+                                "get_lookups": "Project & team references loaded — matching filters...",
+                                "collect_report_data": "All data collected — ticket stats, engineer performance & inventory ready!",
+                                "build_html_report": "Report assembled — KPI cards, tables & styling complete!",
+                                "report_generator": "Report generated successfully — preparing preview...",
                             }
                             if resp_name in report_tool_status:
                                 print(f"[STATUS] Tool done: {resp_name} -> '{report_tool_status[resp_name]}'")

@@ -234,11 +234,8 @@ def collect_report_data(
 
                 type_data = []
                 for label, rs in [("PM", rs_pm), ("TR", rs_tr), ("Other", rs_other)]:
-                    totals = {}
-                    for rs_idx in range(len(rs) - 1, -1, -1):
-                        if rs[rs_idx] and any("TotalTickets" in r for r in rs[rs_idx]):
-                            totals = rs[rs_idx][0] if rs[rs_idx] else {}
-                            break
+                    # Summary row is ALWAYS rs[0] (first result set from SP)
+                    totals = rs[0][0] if rs and rs[0] and any("TotalTickets" in r for r in rs[0]) else {}
                     type_data.append({
                         "TaskType": label,
                         "TotalTickets": totals.get("TotalTickets", 0),
@@ -432,14 +429,12 @@ def build_html_report(
         logo_uri = _get_logo_base64()
         gen_date = datetime.now().strftime("%d %B %Y")
 
-        # Build subtitle parts (only things NOT already in the title)
+        # Build subtitle line
         subtitle_parts = []
         if report_data.get("team_names"):
             subtitle_parts.append(report_data["team_names"])
         if report_data.get("region_names"):
             subtitle_parts.append(report_data["region_names"])
-
-        # Period
         if report_data.get("month") and report_data.get("year"):
             month_name = datetime(report_data["year"], report_data["month"], 1).strftime("%B %Y")
             subtitle_parts.append(month_name)
@@ -447,75 +442,88 @@ def build_html_report(
             subtitle_parts.append(f"{report_data['date_from']} to {report_data['date_to']}")
         elif report_data.get("year"):
             subtitle_parts.append(str(report_data["year"]))
+        subtitle_line = "Project Performance Report"
+        if subtitle_parts:
+            subtitle_line += " &middot; " + " &middot; ".join(subtitle_parts)
 
-        subtitle_parts.append(gen_date)
-        subtitle_line = "&nbsp;&nbsp;&middot;&nbsp;&nbsp;".join(subtitle_parts)
-
-        # ── Build HTML sections (numbered) ──
-        sections_html = ""
+        # ── Build content sections (numbered) ──
         section_num = 1
+
+        # LEFT COLUMN: Executive Summary, Key Insights, Ticket Status
+        left_html = ""
 
         # Executive Summary
         if executive_summary:
-            sections_html += _build_executive_summary(section_num, executive_summary)
+            left_html += _build_executive_summary(section_num, executive_summary)
             section_num += 1
-
-        # KPI Cards (no number — visual grid)
-        kpi_cards = _build_kpi_cards(report_data)
-        if kpi_cards:
-            sections_html += kpi_cards
 
         # Key Insights
+        insights_num = section_num
         if insights:
-            sections_html += _build_insights(section_num, insights)
+            left_html += _build_insights(section_num, insights)
             section_num += 1
 
-        # Ticket Status Table + Chart
+        # Ticket Status Table
         totals = report_data.get("ticket_totals", {})
         has_ticket_data = totals.get("TotalTickets", 0) > 0
         if "tickets" in report_data.get("sections_collected", []) and has_ticket_data:
-            sections_html += _build_ticket_section(section_num, report_data)
+            left_html += _build_ticket_section(section_num, report_data)
             section_num += 1
 
-        # Task Type Breakdown + Chart
+        # Task Type Breakdown (compact, fits in left column)
         type_data = report_data.get("ticket_types", [])
         has_type_data = any(td.get("TotalTickets", 0) > 0 for td in type_data)
         if "ticket_types" in report_data.get("sections_collected", []) and has_type_data:
-            sections_html += _build_task_type_section(section_num, report_data)
+            left_html += _build_task_type_section(section_num, report_data)
             section_num += 1
 
-        # Top Engineers + Chart
-        engineers = report_data.get("engineers", [])
-        has_eng_data = any(e.get("TotalTickets", 0) > 0 for e in engineers)
-        if "engineers" in report_data.get("sections_collected", []) and has_eng_data:
-            sections_html += _build_engineers_section(section_num, report_data)
-            section_num += 1
-
-        # Inventory
+        # Inventory (if present, add to left)
         inventory = report_data.get("inventory", [])
         has_inv_data = any(txn.get("Quantity", 0) > 0 for txn in inventory)
         if "inventory" in report_data.get("sections_collected", []) and has_inv_data:
-            sections_html += _build_inventory_section(section_num, report_data)
+            left_html += _build_inventory_section(section_num, report_data)
             section_num += 1
 
-        # Certifications
+        # RIGHT COLUMN: Team Performance, Recommendations
+        right_html = ""
+
+        # Top Engineers
+        engineers = report_data.get("engineers", [])
+        has_eng_data = any(e.get("TotalTickets", 0) > 0 for e in engineers)
+        if "engineers" in report_data.get("sections_collected", []) and has_eng_data:
+            right_html += _build_engineers_section(section_num, report_data)
+            section_num += 1
+
+        # Certifications (add to right column)
         certs = report_data.get("certifications", [])
         if "certifications" in report_data.get("sections_collected", []) and certs:
-            sections_html += _build_certifications_section(section_num, report_data)
+            right_html += _build_certifications_section(section_num, report_data)
             section_num += 1
 
-        # Discussion / Conclusion
+        # Discussion / Recommendations (right column)
         if discussion:
-            sections_html += _build_discussion(section_num, discussion)
+            right_html += _build_discussion(section_num, discussion)
             section_num += 1
 
-        # If no sections had data, show a message
-        if not sections_html.strip():
-            sections_html = '''<div class="no-data-msg">
-    <div class="no-data-icon">&#128202;</div>
-    <p>No data available for the selected filters and period.</p>
-    <p style="font-size:13px;color:#94a3b8;margin-top:4px;">Try adjusting the project, date range, or team filters.</p>
+        # KPI Cards row
+        kpi_html = _build_kpi_cards(report_data)
+
+        # Two-column body
+        body_html = ""
+        if left_html or right_html:
+            body_html = f'''<div class="two-col">
+    <div class="col-left">{left_html}</div>
+    <div class="col-right">{right_html}</div>
 </div>'''
+        else:
+            body_html = '''<div style="text-align:center;padding:40px 20px;color:#64748b;">
+    <div style="font-size:36px;margin-bottom:8px;">&#128202;</div>
+    <p>No data available for the selected filters and period.</p>
+    <p style="font-size:10px;color:#94a3b8;margin-top:4px;">Try adjusting the project, date range, or team filters.</p>
+</div>'''
+
+        # Project label for footer
+        proj_label = report_data.get("project_names", "All Projects")
 
         # ── Assemble full HTML document ──
         html = f"""<!DOCTYPE html>
@@ -528,20 +536,41 @@ def build_html_report(
 </style>
 </head>
 <body>
-<div class="report-header">
-    <div class="header-content">
-        <img src="{logo_uri}" alt="Ebttikar OIP" class="header-logo">
-        <h1>{_esc(title)}</h1>
-        <p class="header-meta">{subtitle_line}</p>
+<div class="report-root">
+<div class="page">
+    <div class="page-header-band">
+        <div class="header-left">
+            <img src="{logo_uri}" alt="Ebttikar OIP" class="header-logo">
+            <div class="header-title-block">
+                <h1 class="report-title">{_esc(title)}</h1>
+                <p class="report-subtitle">{subtitle_line}</p>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="header-meta-item">
+                <span class="meta-label">Date</span>
+                <span class="meta-value">{gen_date}</span>
+            </div>
+            <div class="header-meta-item">
+                <span class="meta-label">Prepared by</span>
+                <span class="meta-value">Ebttikar OIP</span>
+            </div>
+            <div class="header-meta-item">
+                <span class="meta-label">Classification</span>
+                <span class="meta-value confidential">Confidential</span>
+            </div>
+        </div>
+    </div>
+    <div class="accent-bar"></div>
+    <div class="page-body">
+{kpi_html}
+{body_html}
+    </div>
+    <div class="page-footer">
+        <span>{_esc(proj_label)} &mdash; Project Performance Report &middot; {gen_date} &middot; Confidential</span>
+        <span>Powered by Onasi &middot; &copy; 2026 Onasi-CloudTech</span>
     </div>
 </div>
-<div class="report-body">
-{sections_html}
-</div>
-<div class="report-footer">
-    <div class="footer-line"></div>
-    <div class="powered">Powered by Onasi</div>
-    <div class="copyright">&copy; 2026 Onasi-CloudTech. All Rights Reserved.</div>
 </div>
 </body>
 </html>"""
@@ -572,186 +601,481 @@ def build_html_report(
 # =============================================================================
 
 def _get_report_css() -> str:
-    """Return the complete CSS for the report."""
-    return """* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #fff; color: #1e293b; line-height: 1.6; font-size: 14px; }
+    """Return the complete CSS for the report — compact A4-like design."""
+    return """@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap');
 
-/* ── Header (white, centered logo) ── */
-.report-header {
-    background: #fff; padding: 36px 40px 24px; text-align: center;
-    border-bottom: 2px solid #e2e8f0;
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* ── Root ── */
+.report-root {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: #D1D5DB;
+    padding: 0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
-.header-content {}
-.header-logo { height: 52px; margin-bottom: 20px; }
-.header-content h1 { font-size: 22px; font-weight: 700; color: #1a4f71; margin-bottom: 8px; letter-spacing: -0.3px; }
-.header-meta { font-size: 13px; color: #64748b; letter-spacing: 0.2px; }
 
-/* ── Body ── */
-.report-body { padding: 32px 40px; max-width: 920px; margin: 0 auto; }
-
-/* ── Executive Summary ── */
-.exec-summary {
-    background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-    border-left: 4px solid #1a4f71; border-radius: 0 12px 12px 0;
-    padding: 24px 28px; margin-bottom: 32px;
+/* ── A4 Page ── */
+.page {
+    width: 794px;
+    background: #FFFFFF;
+    box-shadow: 0 4px 32px rgba(0,0,0,0.15);
+    display: flex;
+    flex-direction: column;
 }
-.exec-summary .section-title { margin-bottom: 12px; border-bottom: none; padding-bottom: 0; }
-.exec-summary p { color: #334155; font-size: 14px; line-height: 1.7; }
 
-/* ── KPI Cards ── */
-.kpi-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 16px; margin-bottom: 32px;
+/* ── Header Band ── */
+.page-header-band {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 32px;
+    background: #EEF2FF;
+    border-bottom: 3px solid #2746E3;
+}
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+.header-logo {
+    height: 34px;
+    width: auto;
+}
+.header-title-block {
+    border-left: 2px solid #C7D2FE;
+    padding-left: 14px;
+}
+.report-title {
+    font-family: 'Playfair Display', Georgia, serif;
+    font-size: 18px;
+    font-weight: 700;
+    color: #1E293B;
+    margin: 0;
+    line-height: 1.2;
+}
+.report-subtitle {
+    font-size: 11px;
+    color: #6B7280;
+    margin: 2px 0 0;
+    font-weight: 400;
+    letter-spacing: 0.04em;
+}
+.header-right {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+}
+.header-meta-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+}
+.meta-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: #9CA3AF;
+}
+.meta-value {
+    font-size: 11px;
+    font-weight: 600;
+    color: #374151;
+}
+.meta-value.confidential {
+    color: #DC2626;
+    font-weight: 700;
+}
+
+/* ── Accent Bar ── */
+.accent-bar {
+    height: 4px;
+    background: linear-gradient(90deg, #1D4ED8 0%, #7C3AED 50%, #06B6D4 100%);
+    flex-shrink: 0;
+}
+
+/* ── Page Body ── */
+.page-body {
+    padding: 14px 28px;
+    flex: 1;
+}
+
+/* ── KPI Row ── */
+.kpi-row {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 8px;
+    margin-bottom: 14px;
 }
 .kpi-card {
-    background: #fff; border-radius: 12px; padding: 20px 16px; text-align: center;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06); border: 1px solid #e2e8f0;
-    position: relative; overflow: hidden;
+    border-radius: 8px;
+    padding: 10px 8px 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 2px;
+    border: none;
+    position: relative;
+    overflow: hidden;
 }
-.kpi-card .kpi-value { font-size: 32px; font-weight: 800; margin-bottom: 4px; letter-spacing: -1px; }
-.kpi-card .kpi-label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; }
+.kpi-value {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 18px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+}
+.kpi-label {
+    font-size: 8px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #6B7280;
+    margin-top: 2px;
+}
+.kpi-sub {
+    font-size: 8px;
+    color: #9CA3AF;
+    line-height: 1;
+    margin-top: 2px;
+}
+
+/* ── Two Column ── */
+.two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+.col-left, .col-right {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* ── Section Block ── */
+.section-block {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.section-heading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #0F172A;
+    margin: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding-bottom: 6px;
+    border-bottom: 1.5px solid #E2E8F0;
+}
+.sec-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    background: #2746E3;
+    color: #FFF;
+    font-size: 9px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.body-text {
+    font-size: 11px;
+    line-height: 1.6;
+    color: #374151;
+    margin: 0;
+}
 
 /* ── Insights ── */
-.insights-box {
-    background: #fefce8; border: 1px solid #fde68a; border-radius: 12px;
-    padding: 24px 28px; margin-bottom: 32px;
+.insight-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
 }
-.insights-box .section-title { border-bottom: none; padding-bottom: 0; margin-bottom: 14px; }
-.insight-item {
-    display: flex; align-items: flex-start; gap: 10px; padding: 8px 0;
-    font-size: 14px; color: #334155;
+.insight {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 10.5px;
+    color: #374151;
+    line-height: 1.4;
+    padding: 4px 8px;
+    border-radius: 6px;
 }
-.insight-icon {
-    width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center;
-    justify-content: center; font-size: 12px; flex-shrink: 0; margin-top: 1px;
-}
-.insight-positive { background: #dcfce7; color: #16a34a; }
-.insight-warning { background: #fef3c7; color: #d97706; }
-.insight-info { background: #dbeafe; color: #2563eb; }
-.insight-achievement { background: #f3e8ff; color: #7c3aed; }
-
-/* ── Discussion ── */
-.discussion-box {
-    background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-    border-left: 4px solid #0ea5e9; border-radius: 0 12px 12px 0;
-    padding: 24px 28px; margin-bottom: 32px;
-}
-.discussion-box .section-title { margin-bottom: 12px; border-bottom: none; padding-bottom: 0; }
-.discussion-box p { color: #334155; font-size: 14px; line-height: 1.7; }
-
-/* ── Sections ── */
-.section { margin-bottom: 36px; }
-.section-title {
-    font-size: 16px; font-weight: 700; color: #1a4f71; margin-bottom: 16px;
-    padding-bottom: 8px; border-bottom: 2px solid #68cce4;
-    display: flex; align-items: center; gap: 10px;
-}
-.section-num {
-    background: #1a4f71; color: white; width: 26px; height: 26px; border-radius: 50%;
-    display: inline-flex; align-items: center; justify-content: center;
-    font-size: 13px; font-weight: 700; flex-shrink: 0;
-}
-.section-desc {
-    font-size: 13px; color: #64748b; font-style: italic; margin-bottom: 16px;
-    line-height: 1.5; padding-left: 2px;
-}
-.section-insight {
-    font-size: 13px; color: #1a4f71; font-style: italic; margin-top: 12px;
-    padding: 10px 14px; background: #f0f9ff; border-radius: 8px;
-    border-left: 3px solid #68cce4; line-height: 1.5;
+.insight.critical { background: #FEF2F2; }
+.insight.info { background: #EFF6FF; }
+.insight.positive { background: #F0FDF4; }
+.insight.achievement { background: #FAF5FF; }
+.ins-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 4px;
 }
 
-/* ── Charts (CSS-based) ── */
-.chart-container {
-    margin: 20px 0; padding: 16px; background: #fafbfc; border-radius: 10px;
-    border: 1px solid #f1f5f9;
+/* ── Compact Table ── */
+.compact-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
 }
-.chart-title {
-    font-size: 12px; font-weight: 600; color: #64748b; text-transform: uppercase;
-    letter-spacing: 0.5px; margin-bottom: 14px;
+.compact-table thead tr {
+    background: #0F172A;
 }
-.hbar-row {
-    display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+.compact-table thead th {
+    padding: 6px 8px;
+    text-align: left;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #94A3B8;
 }
-.hbar-label {
-    width: 110px; font-size: 12px; font-weight: 500; color: #475569;
-    text-align: right; flex-shrink: 0; white-space: nowrap; overflow: hidden;
+.compact-table tbody tr {
+    border-bottom: 1px solid #F1F5F9;
+}
+.compact-table tbody tr:nth-child(even) {
+    background: #F8FAFC;
+}
+.compact-table tbody td {
+    padding: 6px 8px;
+    color: #374151;
+    vertical-align: middle;
+}
+.compact-table td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-weight: 500;
+}
+.compact-table td.name {
+    font-weight: 600;
+    color: #1E293B;
+    white-space: nowrap;
+    overflow: hidden;
     text-overflow: ellipsis;
+    max-width: 100px;
 }
-.hbar-track {
-    flex: 1; height: 22px; background: #f1f5f9; border-radius: 6px;
-    overflow: hidden; position: relative;
+.compact-table td.muted {
+    color: #9CA3AF;
+    font-size: 10px;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-.hbar-fill {
-    height: 100%; border-radius: 6px; display: flex; align-items: center;
-    padding-left: 8px; font-size: 11px; font-weight: 700; color: white;
-    min-width: 28px; transition: width 0.3s ease;
-}
-.hbar-value {
-    font-size: 12px; font-weight: 700; color: #334155; width: 40px;
-    text-align: right; flex-shrink: 0;
-}
-.donut-container {
-    display: flex; align-items: center; gap: 28px; justify-content: center;
-    flex-wrap: wrap;
-}
-.donut {
-    width: 140px; height: 140px; border-radius: 50%; position: relative;
-    display: flex; align-items: center; justify-content: center;
-}
-.donut-hole {
-    width: 80px; height: 80px; border-radius: 50%; background: #fafbfc;
-    display: flex; align-items: center; justify-content: center;
-    flex-direction: column; position: absolute;
-}
-.donut-total { font-size: 24px; font-weight: 800; color: #1e293b; }
-.donut-label-small { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
-.donut-legend { display: flex; flex-direction: column; gap: 8px; }
-.legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #475569; }
-.legend-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
-
-/* ── Tables ── */
-table { width: 100%; border-collapse: collapse; font-size: 13px; border-radius: 8px; overflow: hidden; }
-thead th {
-    background: #f1f5f9; color: #475569; font-weight: 600; text-align: left;
-    padding: 12px 14px; border-bottom: 2px solid #e2e8f0; font-size: 12px;
-    text-transform: uppercase; letter-spacing: 0.5px;
-}
-td { padding: 11px 14px; border-bottom: 1px solid #f1f5f9; }
-tr:hover td { background: #f8fafc; }
-tbody tr:last-child td { border-bottom: none; }
-
-/* ── Status badges ── */
-.status-badge {
-    display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
-    border-radius: 20px; font-weight: 600; font-size: 12px;
-}
-.pct-bar {
-    display: inline-block; height: 6px; border-radius: 3px; min-width: 4px;
-    vertical-align: middle; margin-left: 8px;
+.compact-table td.red-text {
+    color: #EF4444;
+    font-weight: 700;
+    text-align: right;
 }
 
-/* ── No data ── */
-.no-data-msg {
-    text-align: center; padding: 60px 20px; color: #64748b;
+/* ── Bar Cell ── */
+.bar-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
 }
-.no-data-icon { font-size: 48px; margin-bottom: 12px; }
+.bar-wrap {
+    flex: 1;
+    height: 5px;
+    background: #F1F5F9;
+    border-radius: 99px;
+    overflow: hidden;
+    min-width: 40px;
+}
+.bar {
+    height: 100%;
+    border-radius: 99px;
+}
+.pct {
+    font-size: 10px;
+    font-weight: 600;
+    color: #6B7280;
+    white-space: nowrap;
+}
 
-/* ── Footer ── */
-.report-footer {
-    text-align: center; padding: 28px 40px 24px; margin-top: 20px;
+/* ── Badge ── */
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 99px;
+    font-size: 10px;
+    font-weight: 600;
 }
-.footer-line { height: 1px; background: linear-gradient(90deg, transparent, #cbd5e1, transparent); margin-bottom: 20px; }
-.powered { font-size: 14px; font-weight: 700; color: #475569; margin-bottom: 4px; letter-spacing: 0.3px; }
-.copyright { font-size: 12px; color: #94a3b8; }
+
+/* ── Alert Strip ── */
+.alert-strip {
+    font-size: 10.5px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    line-height: 1.5;
+}
+.alert-strip.red {
+    background: #FEF2F2;
+    border-left: 3px solid #EF4444;
+    color: #7F1D1D;
+}
+.alert-strip.amber {
+    background: #FFFBEB;
+    border-left: 3px solid #F59E0B;
+    color: #78350F;
+}
+
+/* ── Sub label ── */
+.sub-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0;
+}
+
+/* ── Engineer Rows ── */
+.eng-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 4px;
+}
+.eng-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+}
+.eng-name {
+    font-size: 11px;
+    font-weight: 600;
+    color: #1E293B;
+}
+.eng-rate {
+    font-size: 11px;
+    font-weight: 700;
+}
+.eng-bar-track {
+    width: 100%;
+    height: 7px;
+    background: #F1F5F9;
+    border-radius: 99px;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.eng-bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    min-width: 3px;
+}
+.eng-count {
+    position: absolute;
+    right: 0;
+    font-size: 9px;
+    color: #9CA3AF;
+    padding-right: 4px;
+    background: #F1F5F9;
+    line-height: 7px;
+}
+
+/* ── Recommendations ── */
+.rec-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.rec-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 10.5px;
+    color: #374151;
+    line-height: 1.4;
+    padding: 4px 0;
+    border-bottom: 1px solid #F1F5F9;
+}
+.rec-icon {
+    font-size: 13px;
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+}
+.rec-text { flex: 1; }
+
+/* ── Page Footer ── */
+.page-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 28px;
+    border-top: 1px solid #E2E8F0;
+    background: #F8FAFC;
+    font-size: 9.5px;
+    color: #9CA3AF;
+    flex-shrink: 0;
+}
 
 /* ── Print ── */
 @media print {
-    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; font-size: 12px; }
-    .report-header, .kpi-card, table, .section, .exec-summary, .insights-box, .discussion-box, .chart-container { break-inside: avoid; }
-    .report-header { padding: 20px 24px; }
-    .report-body { padding: 16px 24px; }
-    @page { size: A4; margin: 10mm; }
+    html, body {
+        margin: 0;
+        padding: 0;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+    }
+    .report-root {
+        background: transparent;
+        padding: 0;
+        gap: 0;
+        min-height: auto;
+    }
+    .page {
+        width: 100%;
+        min-height: auto;
+        box-shadow: none;
+    }
+    .section-block {
+        page-break-inside: avoid;
+    }
+    .page-body {
+        padding: 10px 18px;
+    }
+    .page-header-band {
+        padding: 10px 18px;
+    }
+    .page-footer {
+        padding: 6px 18px;
+    }
+    .kpi-row { margin-bottom: 12px; gap: 6px; }
+    .kpi-card { padding: 6px 4px 4px; }
+    .kpi-value { font-size: 15px; }
+    .two-col { gap: 14px; }
+    .col-left, .col-right { gap: 10px; }
+    .section-block { gap: 5px; }
+    .section-heading { font-size: 10px; padding-bottom: 4px; }
+    .sec-num { width: 16px; height: 16px; font-size: 8px; }
+    .body-text { font-size: 10px; line-height: 1.5; }
+    .insight { padding: 4px 8px; font-size: 10px; }
+    .compact-table { font-size: 9.5px; }
+    .compact-table thead th { padding: 4px 6px; font-size: 8px; }
+    .compact-table tbody td { padding: 4px 6px; }
+    .eng-row { margin-bottom: 3px; }
+    .eng-name { font-size: 10px; }
+    .eng-rate { font-size: 10px; }
+    .sub-label { font-size: 9px; }
+    .rec-item { font-size: 10px; padding: 3px 0; }
+    .rec-icon { font-size: 11px; }
+    .alert-strip { font-size: 9px; padding: 5px 8px; }
+    @page { size: A4; margin: 5mm; }
 }"""
 
 
@@ -781,25 +1105,26 @@ def _fmt_num(val) -> str:
 
 
 def _build_executive_summary(num: int, summary_text: str) -> str:
-    """Build the executive summary section."""
-    return f'''<div class="exec-summary">
-    <div class="section-title"><span class="section-num">{num}</span> Executive Summary</div>
-    <p>{_esc(summary_text)}</p>
+    """Build the executive summary section — compact body text."""
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Executive Summary</h2>
+    <p class="body-text">{_esc(summary_text)}</p>
 </div>
 '''
 
 
 def _build_insights(num: int, insights_str: str) -> str:
-    """Build the key insights section from pipe-separated string."""
+    """Build the key insights section — dot-style with colored backgrounds."""
     items = [i.strip() for i in insights_str.split("|") if i.strip()]
     if not items:
         return ""
 
-    icon_map = {
-        "positive": ("&#10003;", "insight-positive"),
-        "warning": ("&#9888;", "insight-warning"),
-        "info": ("&#8505;", "insight-info"),
-        "achievement": ("&#9733;", "insight-achievement"),
+    # Map category to (dot color, CSS class)
+    cat_map = {
+        "positive": ("#10B981", "positive"),
+        "warning": ("#EF4444", "critical"),
+        "info": ("#3B82F6", "info"),
+        "achievement": ("#7C3AED", "achievement"),
     }
 
     items_html = ""
@@ -810,83 +1135,128 @@ def _build_insights(num: int, insights_str: str) -> str:
         else:
             cat, text = "info", item
 
-        icon_char, icon_cls = icon_map.get(cat, ("&#8226;", "insight-info"))
-        items_html += f'''    <div class="insight-item">
-        <div class="insight-icon {icon_cls}">{icon_char}</div>
-        <div>{_esc(text.strip())}</div>
-    </div>
+        dot_color, css_cls = cat_map.get(cat, ("#3B82F6", "info"))
+        items_html += f'''        <div class="insight {css_cls}">
+            <span class="ins-dot" style="background:{dot_color}"></span>
+            <span>{_esc(text.strip())}</span>
+        </div>
 '''
 
-    return f'''<div class="insights-box">
-    <div class="section-title"><span class="section-num">{num}</span> Key Insights</div>
-{items_html}</div>
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Key Insights</h2>
+    <div class="insight-list">
+{items_html}    </div>
+</div>
 '''
 
 
 def _build_discussion(num: int, discussion_text: str) -> str:
-    """Build the discussion/conclusion section."""
-    return f'''<div class="discussion-box">
-    <div class="section-title"><span class="section-num">{num}</span> Discussion &amp; Recommendations</div>
-    <p>{_esc(discussion_text)}</p>
+    """Build the recommendations section with emoji icons per line."""
+    # Split discussion into individual recommendation lines
+    lines = [l.strip() for l in discussion_text.replace("\n", "|").split("|") if l.strip()]
+
+    # If it's a single paragraph (no pipes/newlines), display as body text
+    if len(lines) <= 1:
+        return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Recommendations</h2>
+    <p class="body-text">{_esc(discussion_text)}</p>
+</div>
+'''
+
+    # Cycle through recommendation icons
+    rec_icons = ["&#128269;", "&#9889;", "&#9878;&#65039;", "&#127919;", "&#128101;", "&#128230;", "&#128200;", "&#128736;"]
+
+    items_html = ""
+    for i, line in enumerate(lines):
+        icon = rec_icons[i % len(rec_icons)]
+        items_html += f'''        <div class="rec-item">
+            <span class="rec-icon">{icon}</span>
+            <span class="rec-text">{_esc(line)}</span>
+        </div>
+'''
+
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Recommendations</h2>
+    <div class="rec-list">
+{items_html}    </div>
 </div>
 '''
 
 
 def _build_kpi_cards(report_data: dict) -> str:
-    """Build the KPI summary cards grid."""
+    """Build the KPI row — 6 pastel cards with bold colored values."""
+    # Each card: (label, value, color, bg, sub_text)
     cards = []
 
-    # Ticket KPIs
     totals = report_data.get("ticket_totals", {})
     if totals and totals.get("TotalTickets", 0) > 0:
         total = totals.get("TotalTickets", 0)
+        open_t = totals.get("OpenTickets", 0)
         completed = totals.get("CompletedTickets", 0)
-        # Calculate rate from data (SP may return 0)
+        sla = totals.get("SLABreached", 0)
         rate = totals.get("CompletionRate", 0)
         if (rate == 0 or rate is None) and total > 0:
             rate = (completed / total) * 100
-        rate_str = f"{rate:.1f}%" if isinstance(rate, float) else f"{rate}%"
+        open_pct = f"{(open_t / total * 100):.1f}%" if total > 0 else ""
+        comp_pct = f"{rate:.1f}%" if isinstance(rate, float) else f"{rate}%"
+        sla_pct = f"{(sla / total * 100):.1f}%" if total > 0 else ""
 
-        cards.append(("#3b82f6", _fmt_num(total), "Total Tickets"))
-        cards.append(("#f59e0b", _fmt_num(totals.get("OpenTickets")), "Open"))
-        cards.append(("#22c55e", _fmt_num(completed), f"Completed ({rate_str})"))
-        cards.append(("#ef4444", _fmt_num(totals.get("SLABreached")), "SLA Breached"))
+        cards.append(("Total Tickets", _fmt_num(total), "#2746E3", "#EEF2FF", ""))
+        cards.append(("Open Tickets", _fmt_num(open_t), "#D97706", "#FEF3C7", open_pct))
+        cards.append(("Completed", _fmt_num(completed), "#059669", "#D1FAE5", comp_pct))
+        cards.append(("SLA Breached", _fmt_num(sla), "#DC2626", "#FEE2E2", sla_pct))
 
     # Task type KPIs
     type_data = report_data.get("ticket_types", [])
     for td in type_data:
         if td.get("TotalTickets", 0) > 0:
             if td["TaskType"] == "PM":
-                cards.append(("#8b5cf6", _fmt_num(td["TotalTickets"]), "PM Tickets"))
+                total_all = sum(t.get("TotalTickets", 0) for t in type_data)
+                pm_pct = f"{(td['TotalTickets'] / total_all * 100):.0f}%" if total_all > 0 else ""
+                cards.append(("PM Tickets", _fmt_num(td["TotalTickets"]), "#7C3AED", "#F3E8FF", pm_pct))
             elif td["TaskType"] == "TR":
-                cards.append(("#6366f1", _fmt_num(td["TotalTickets"]), "TR Calls"))
+                total_all = sum(t.get("TotalTickets", 0) for t in type_data)
+                tr_pct = f"{(td['TotalTickets'] / total_all * 100):.0f}%" if total_all > 0 else ""
+                cards.append(("TR Calls", _fmt_num(td["TotalTickets"]), "#6366F1", "#E0E7FF", tr_pct))
 
-    # Engineer KPIs
+    # Engineer KPI
     eng_summary = report_data.get("engineer_summary", {})
+    engineers = report_data.get("engineers", [])
     if eng_summary and eng_summary.get("TotalEngineers", 0) > 0:
-        cards.append(("#0ea5e9", _fmt_num(eng_summary.get("TotalEngineers")), "Engineers"))
+        total_eng = eng_summary.get("TotalEngineers", 0)
+        active_eng = len([e for e in engineers if e.get("TotalTickets", 0) > 0])
+        cards.append(("Engineers", f"{active_eng}/{total_eng}", "#0891B2", "#E0F2FE", "active"))
+    elif engineers:
+        active_eng = len([e for e in engineers if e.get("TotalTickets", 0) > 0])
+        if active_eng > 0:
+            cards.append(("Engineers", str(active_eng), "#0891B2", "#E0F2FE", "active"))
 
-    # Inventory KPIs
+    # Inventory KPI
     inv_summary = report_data.get("inventory_summary", {})
     if inv_summary and inv_summary.get("TotalQuantity", 0) > 0:
-        cards.append(("#14b8a6", _fmt_num(inv_summary.get("TotalQuantity")), "Parts Consumed"))
+        cards.append(("Parts Consumed", _fmt_num(inv_summary.get("TotalQuantity")), "#14B8A6", "#CCFBF1", ""))
 
     if not cards:
         return ""
 
+    # Pad to 6 cards or take first 6
     cards_html = ""
-    for color, value, label in cards:
-        cards_html += f'''    <div class="kpi-card">
-        <div style="position:absolute;top:0;left:0;right:0;height:4px;background:{color};border-radius:12px 12px 0 0;"></div>
-        <div class="kpi-value" style="color:{color}">{value}</div>
-        <div class="kpi-label">{_esc(label)}</div>
-    </div>\n'''
+    for label, value, color, bg, sub in cards[:6]:
+        sub_html = f'<div class="kpi-sub">{_esc(sub)}</div>' if sub else ""
+        cards_html += f'''        <div class="kpi-card" style="background:{bg}">
+            <div class="kpi-value" style="color:{color}">{value}</div>
+            <div class="kpi-label">{_esc(label)}</div>
+            {sub_html}
+        </div>
+'''
 
-    return f'<div class="kpi-grid">\n{cards_html}</div>\n'
+    return f'''    <div class="kpi-row">
+{cards_html}    </div>
+'''
 
 
 def _build_ticket_section(num: int, report_data: dict) -> str:
-    """Build the ticket status overview table with donut chart and insight."""
+    """Build the ticket status table — compact with dark header, bar visualizations, badges."""
     totals = report_data.get("ticket_totals", {})
     total = totals.get("TotalTickets", 0)
     if total == 0:
@@ -898,105 +1268,56 @@ def _build_ticket_section(num: int, report_data: dict) -> str:
     pending = totals.get("PendingApprovalTickets", 0)
     sla = totals.get("SLABreached", 0)
 
-    # Calculate completion rate
-    comp_rate = (completed / total * 100) if total > 0 else 0
-
-    # Section description
-    desc = (f"Overview of all {_fmt_num(total)} tickets across their lifecycle statuses. "
-            f"The completion rate stands at {comp_rate:.1f}%, with {_fmt_num(open_t)} tickets still open.")
-
-    # Build CSS donut chart
-    segments = [
-        ("Open", open_t, "#f59e0b"),
-        ("Completed", completed, "#22c55e"),
-        ("Suspended", suspended, "#f97316"),
-        ("Pending", pending, "#8b5cf6"),
-    ]
-    # Filter zero segments
-    segments = [(l, v, c) for l, v, c in segments if v > 0]
-
-    donut_html = ""
-    if segments:
-        # Build conic-gradient
-        gradient_parts = []
-        cumulative = 0
-        for label, val, color in segments:
-            pct = val / total * 100
-            gradient_parts.append(f"{color} {cumulative:.1f}% {cumulative + pct:.1f}%")
-            cumulative += pct
-        gradient = f"conic-gradient({', '.join(gradient_parts)})"
-
-        # Legend
-        legend_items = ""
-        for label, val, color in segments:
-            pct = val / total * 100
-            legend_items += f'<div class="legend-item"><span class="legend-dot" style="background:{color}"></span>{label}: {_fmt_num(val)} ({pct:.1f}%)</div>\n'
-
-        donut_html = f'''    <div class="chart-container">
-        <div class="chart-title">Figure {num}.1 &mdash; Ticket Status Distribution</div>
-        <div class="donut-container">
-            <div class="donut" style="background:{gradient}">
-                <div class="donut-hole">
-                    <div class="donut-total">{_fmt_num(total)}</div>
-                    <div class="donut-label-small">Total</div>
-                </div>
-            </div>
-            <div class="donut-legend">
-{legend_items}            </div>
-        </div>
-    </div>
-'''
-
-    # Table rows
     rows_data = [
-        ("Open", open_t, "#f59e0b", "#fef3c7"),
-        ("Completed", completed, "#22c55e", "#dcfce7"),
-        ("Suspended", suspended, "#f97316", "#ffedd5"),
-        ("Pending Approval", pending, "#8b5cf6", "#f3e8ff"),
-        ("SLA Breached", sla, "#ef4444", "#fee2e2"),
+        ("Open", open_t, "#F59E0B", "#FEF3C7", "#B45309"),
+        ("Completed", completed, "#10B981", "#D1FAE5", "#065F46"),
+        ("Suspended", suspended, "#F97316", "#FFEDD5", "#9A3412"),
+        ("Pending Approval", pending, "#8B5CF6", "#F3E8FF", "#5B21B6"),
+        ("SLA Breached", sla, "#EF4444", "#FEE2E2", "#B91C1C"),
     ]
 
     table_rows = ""
-    for status, count, color, bg in rows_data:
+    for status, count, bar_color, badge_bg, badge_color in rows_data:
         if count == 0:
             continue
         pct = (count / total * 100) if total > 0 else 0
-        bar_width = max(4, min(120, int(pct * 1.2)))
-        table_rows += f'''        <tr>
-            <td><span class="status-badge" style="background:{bg};color:{color}">{status}</span></td>
-            <td style="font-weight:600">{_fmt_num(count)}</td>
-            <td>{pct:.1f}%<span class="pct-bar" style="width:{bar_width}px;background:{color}"></span></td>
-        </tr>\n'''
+        bar_w = f"{max(pct, 0.5):.1f}%"
+        min_w = "min-width:2px;" if pct < 1 else ""
+        table_rows += f'''            <tr>
+                <td><span class="badge" style="background:{badge_bg};color:{badge_color}">{_esc(status)}</span></td>
+                <td class="num">{_fmt_num(count)}</td>
+                <td><div class="bar-cell"><div class="bar-wrap"><div class="bar" style="width:{bar_w};{min_w}background:{bar_color}"></div></div><span class="pct">{pct:.1f}%</span></div></td>
+            </tr>
+'''
 
     if not table_rows:
         return ""
 
-    # Insight
-    insight = ""
+    # Alert strip
+    alert = ""
     if sla > 0:
         sla_pct = sla / total * 100
         if sla_pct > 50:
-            insight = f'<div class="section-insight">&#9888; <strong>Attention:</strong> SLA breach rate is critically high at {sla_pct:.1f}% ({_fmt_num(sla)} of {_fmt_num(total)} tickets). Immediate review of response processes and resource allocation is recommended.</div>'
+            alert = f'<div class="alert-strip red">&#9888; SLA breach rate critically high at {sla_pct:.1f}% &mdash; immediate intervention required.</div>'
         elif sla_pct > 20:
-            insight = f'<div class="section-insight">&#9888; <strong>Note:</strong> SLA breach rate of {sla_pct:.1f}% ({_fmt_num(sla)} tickets) exceeds acceptable thresholds. Consider reviewing ticket assignment workflows.</div>'
-    elif comp_rate >= 80:
-        insight = f'<div class="section-insight">&#10003; <strong>Strong performance:</strong> Completion rate of {comp_rate:.1f}% indicates effective ticket resolution processes.</div>'
+            alert = f'<div class="alert-strip amber">&#9888; SLA breach rate of {sla_pct:.1f}% exceeds acceptable thresholds.</div>'
 
-    return f'''<div class="section">
-    <div class="section-title"><span class="section-num">{num}</span> Ticket Status Overview</div>
-    <p class="section-desc">{desc}</p>
-{donut_html}    <table>
-        <thead><tr><th>Status</th><th>Count</th><th>Distribution</th></tr></thead>
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Ticket Status</h2>
+    <table class="compact-table">
+        <thead>
+            <tr><th>Status</th><th>Count</th><th>Share</th></tr>
+        </thead>
         <tbody>
 {table_rows}        </tbody>
     </table>
-{insight}
+    {alert}
 </div>
 '''
 
 
 def _build_task_type_section(num: int, report_data: dict) -> str:
-    """Build the task type breakdown table with horizontal bar chart."""
+    """Build the task type breakdown — compact table with share bars."""
     type_data = report_data.get("ticket_types", [])
     if not type_data:
         return ""
@@ -1006,69 +1327,36 @@ def _build_task_type_section(num: int, report_data: dict) -> str:
         return ""
 
     total_all = sum(td["TotalTickets"] for td in active_types)
-    max_val = max(td["TotalTickets"] for td in active_types)
+    type_colors = {"PM": "#7C3AED", "TR": "#6366F1", "Other": "#64748B"}
+    type_bgs = {"PM": "#F3E8FF", "TR": "#E0E7FF", "Other": "#F1F5F9"}
+    type_badge_colors = {"PM": "#5B21B6", "TR": "#4338CA", "Other": "#475569"}
 
-    # Description
-    type_summary = ", ".join(f"{td['TaskType']}: {_fmt_num(td['TotalTickets'])}" for td in active_types)
-    dominant = max(active_types, key=lambda x: x["TotalTickets"])
-    desc = (f"Breakdown of tickets by task type ({type_summary}). "
-            f"{dominant['TaskType']} tickets represent the largest category at "
-            f"{(dominant['TotalTickets']/total_all*100):.0f}% of total volume.")
-
-    type_colors = {"PM": "#8b5cf6", "TR": "#6366f1", "Other": "#64748b"}
-    type_bgs = {"PM": "#f3e8ff", "TR": "#e0e7ff", "Other": "#f1f5f9"}
-
-    # Horizontal bar chart
-    chart_bars = ""
-    for td in active_types:
-        tt = td["TaskType"]
-        color = type_colors.get(tt, "#64748b")
-        pct = (td["TotalTickets"] / max_val * 100) if max_val > 0 else 0
-        chart_bars += f'''        <div class="hbar-row">
-            <div class="hbar-label">{tt}</div>
-            <div class="hbar-track"><div class="hbar-fill" style="width:{pct:.0f}%;background:{color}">{_fmt_num(td["TotalTickets"])}</div></div>
-            <div class="hbar-value">{(td["TotalTickets"]/total_all*100):.0f}%</div>
-        </div>\n'''
-
-    chart_html = f'''    <div class="chart-container">
-        <div class="chart-title">Figure {num}.1 &mdash; Ticket Volume by Task Type</div>
-{chart_bars}    </div>
-'''
-
-    # Table
     table_rows = ""
     for td in active_types:
         tt = td["TaskType"]
-        color = type_colors.get(tt, "#64748b")
-        bg = type_bgs.get(tt, "#f1f5f9")
-        table_rows += f'''        <tr>
-            <td><span class="status-badge" style="background:{bg};color:{color}">{tt}</span></td>
-            <td style="font-weight:600">{_fmt_num(td["TotalTickets"])}</td>
-            <td>{_fmt_num(td["OpenTickets"])}</td>
-            <td>{_fmt_num(td["CompletedTickets"])}</td>
-            <td>{_fmt_num(td["SuspendedTickets"])}</td>
-        </tr>\n'''
+        bar_color = type_colors.get(tt, "#64748B")
+        badge_bg = type_bgs.get(tt, "#F1F5F9")
+        badge_color = type_badge_colors.get(tt, "#475569")
+        pct = (td["TotalTickets"] / total_all * 100) if total_all > 0 else 0
+        bar_w = f"{max(pct, 0.5):.1f}%"
+        table_rows += f'''            <tr>
+                <td><span class="badge" style="background:{badge_bg};color:{badge_color}">{_esc(tt)}</span></td>
+                <td class="num">{_fmt_num(td["TotalTickets"])}</td>
+                <td class="num">{_fmt_num(td["OpenTickets"])}</td>
+                <td class="num">{_fmt_num(td["CompletedTickets"])}</td>
+                <td><div class="bar-cell"><div class="bar-wrap"><div class="bar" style="width:{bar_w};background:{bar_color}"></div></div><span class="pct">{pct:.0f}%</span></div></td>
+            </tr>
+'''
 
-    # Insight
-    pm_count = next((td["TotalTickets"] for td in active_types if td["TaskType"] == "PM"), 0)
-    tr_count = next((td["TotalTickets"] for td in active_types if td["TaskType"] == "TR"), 0)
-    insight = ""
-    if pm_count > 0 and tr_count > 0:
-        ratio = pm_count / tr_count if tr_count > 0 else 0
-        if ratio > 2:
-            insight = f'<div class="section-insight">&#8505; PM tickets outnumber TR calls by {ratio:.1f}:1, indicating a proactive maintenance focus. This helps reduce reactive incidents over time.</div>'
-        elif ratio < 0.5:
-            insight = f'<div class="section-insight">&#9888; TR calls ({_fmt_num(tr_count)}) significantly exceed PM tickets ({_fmt_num(pm_count)}). Consider increasing preventive maintenance schedules to reduce reactive workload.</div>'
-
-    return f'''<div class="section">
-    <div class="section-title"><span class="section-num">{num}</span> Tickets by Task Type</div>
-    <p class="section-desc">{desc}</p>
-{chart_html}    <table>
-        <thead><tr><th>Type</th><th>Total</th><th>Open</th><th>Completed</th><th>Suspended</th></tr></thead>
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Task Type Breakdown</h2>
+    <table class="compact-table">
+        <thead>
+            <tr><th>Type</th><th>Total</th><th>Open</th><th>Done</th><th>Share</th></tr>
+        </thead>
         <tbody>
 {table_rows}        </tbody>
     </table>
-{insight}
 </div>
 '''
 
@@ -1118,23 +1406,19 @@ def _consolidate_engineers(engineers: list) -> list:
 
 
 def _build_engineers_section(num: int, report_data: dict) -> str:
-    """Build the team performance section with supervisors and field engineers separated."""
+    """Build the team performance section — supervisors table + field engineer progress bars."""
     engineers = report_data.get("engineers", [])
     if not engineers:
         return ""
 
-    # Filter out engineers with 0 tickets
     active_eng = [e for e in engineers if e.get("TotalTickets", 0) > 0]
     if not active_eng:
         return ""
 
-    # Consolidate duplicate rows (same person across multiple regions)
     active_eng = _consolidate_engineers(active_eng)
 
-    # Separate by role: Supervisors/Team Leads vs Field Engineers
     supervisor_roles = {"Supervisor", "Administrator", "Operations Manager",
                         "Project Manager", "Project Coordinator", "Logistics Supervisor"}
-    field_roles = {"Field Engineer", "Resident Engineer"}
 
     supervisors = []
     field_engineers = []
@@ -1145,168 +1429,96 @@ def _build_engineers_section(num: int, report_data: dict) -> str:
         else:
             field_engineers.append(eng)
 
-    # Sort each group by completed desc
-    supervisors = sorted(supervisors, key=lambda e: e.get("CompletedTickets", 0), reverse=True)
-    field_engineers = sorted(field_engineers, key=lambda e: e.get("CompletedTickets", 0), reverse=True)
+    supervisors = sorted(supervisors, key=lambda e: e.get("TotalTickets", 0), reverse=True)
+    field_engineers = sorted(field_engineers, key=lambda e: e.get("TotalTickets", 0), reverse=True)
 
     total_tickets = sum(e.get("TotalTickets", 0) for e in active_eng)
     total_completed = sum(e.get("CompletedTickets", 0) for e in active_eng)
     avg_rate = (total_completed / total_tickets * 100) if total_tickets > 0 else 0
 
-    fe_count = len(field_engineers)
-    sv_count = len(supervisors)
-    desc = (f"Performance metrics for {len(active_eng)} active team members "
-            f"({sv_count} regional team lead{'s' if sv_count != 1 else ''}, "
-            f"{fe_count} field engineer{'s' if fe_count != 1 else ''}) "
-            f"handling a combined {_fmt_num(total_tickets)} tickets with an overall "
-            f"completion rate of {avg_rate:.1f}%.")
-
-    section_html = f'''<div class="section">
-    <div class="section-title"><span class="section-num">{num}</span> Team Performance</div>
-    <p class="section-desc">{desc}</p>
+    section_html = f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Team Performance</h2>
 '''
 
-    # ── Subsection: Regional Team Leads / Supervisors ──
+    # ── Supervisors Table ──
     if supervisors:
         sv_total = sum(e.get("TotalTickets", 0) for e in supervisors)
         sv_completed = sum(e.get("CompletedTickets", 0) for e in supervisors)
         sv_rate = (sv_completed / sv_total * 100) if sv_total > 0 else 0
 
-        sv_rows = ""
-        for i, eng in enumerate(supervisors, 1):
+        section_html += f'    <p class="sub-label">Regional Supervisors &mdash; {_fmt_num(sv_total)} tickets &middot; {sv_rate:.1f}% completion</p>\n'
+        section_html += '    <table class="compact-table">\n        <thead><tr><th>Name</th><th>Region</th><th>Total</th><th>Rate</th></tr></thead>\n        <tbody>\n'
+
+        for eng in supervisors[:6]:
             name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
-            role = eng.get("RoleName", "Supervisor")
             regions = eng.get("_regions", [])
             if not regions:
                 region = eng.get("RegionName", "")
                 regions = [region] if region else []
+            region_str = ", ".join(r for r in regions if r)[:40]
             completed = eng.get("CompletedTickets", 0)
             total_e = eng.get("TotalTickets", 0)
             rate_val = (completed / total_e * 100) if total_e > 0 else 0
-            rate_color = "#22c55e" if rate_val >= 80 else "#f59e0b" if rate_val >= 50 else "#ef4444"
-            region_badges = "".join(
-                f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(r)}</span>'
-                for r in regions if r
-            )
+            rate_color = "#10B981" if rate_val >= 50 else "#EF4444"
 
-            sv_rows += f'''        <tr>
-            <td>{i}</td>
-            <td style="font-weight:600">{_esc(name)}{region_badges}</td>
-            <td><span style="color:#6366f1;font-weight:500">{_esc(role)}</span></td>
-            <td>{_fmt_num(total_e)}</td>
-            <td>{_fmt_num(completed)}</td>
-            <td><span style="color:{rate_color};font-weight:700">{rate_val:.1f}%</span></td>
-        </tr>\n'''
-
-        section_html += f'''    <div style="margin-top:16px">
-        <div style="font-weight:700;font-size:15px;color:#1e293b;margin-bottom:8px">
-            {num}.1 Regional Team Leads
-            <span style="font-weight:400;color:#64748b;font-size:13px">&mdash; {sv_count} lead{'s' if sv_count != 1 else ''}, {_fmt_num(sv_total)} tickets overseen, {sv_rate:.1f}% completion</span>
-        </div>
-    </div>
-    <table>
-        <thead><tr><th style="width:40px">#</th><th>Name</th><th>Role</th><th>Total</th><th>Completed</th><th>Rate</th></tr></thead>
-        <tbody>
-{sv_rows}        </tbody>
-    </table>
+            section_html += f'''            <tr>
+                <td class="name">{_esc(name)}</td>
+                <td class="muted">{_esc(region_str)}</td>
+                <td class="num">{_fmt_num(total_e)}</td>
+                <td class="num" style="color:{rate_color};font-weight:700">{rate_val:.1f}%</td>
+            </tr>
 '''
+        section_html += '        </tbody>\n    </table>\n'
 
-    # ── Subsection: Field Engineers ──
+    # ── Field Engineers Progress Bars ──
     if field_engineers:
-        top_fe = field_engineers[:15]
+        top_fe = field_engineers[:6]
         fe_total = sum(e.get("TotalTickets", 0) for e in field_engineers)
         fe_completed = sum(e.get("CompletedTickets", 0) for e in field_engineers)
         fe_rate = (fe_completed / fe_total * 100) if fe_total > 0 else 0
-        max_tickets = max(e.get("TotalTickets", 0) for e in top_fe)
+        max_tickets = max(e.get("TotalTickets", 1) for e in top_fe)
 
-        # Horizontal bar chart (top 8 field engineers)
-        chart_bars = ""
-        eng_colors = ["#3b82f6", "#6366f1", "#8b5cf6", "#0ea5e9", "#14b8a6", "#22c55e", "#f59e0b", "#ef4444"]
-        for i, eng in enumerate(top_fe[:8]):
+        section_html += f'\n    <p class="sub-label" style="margin-top:16px">Field Engineers &mdash; {_fmt_num(fe_total)} tickets &middot; {fe_rate:.1f}% completion</p>\n'
+
+        eng_colors = ["#3B82F6", "#8B5CF6", "#06B6D4", "#10B981", "#F59E0B", "#EF4444", "#6366F1", "#EC4899"]
+        for i, eng in enumerate(top_fe):
             name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
-            short_name = name[:16] + "..." if len(name) > 16 else name
-            total_e = eng.get("TotalTickets", 0)
-            completed_e = eng.get("CompletedTickets", 0)
-            pct = (total_e / max_tickets * 100) if max_tickets > 0 else 0
-            color = eng_colors[i % len(eng_colors)]
-            chart_bars += f'''        <div class="hbar-row">
-            <div class="hbar-label">{_esc(short_name)}</div>
-            <div class="hbar-track"><div class="hbar-fill" style="width:{pct:.0f}%;background:{color}">{_fmt_num(completed_e)}/{_fmt_num(total_e)}</div></div>
-            <div class="hbar-value">{_fmt_num(total_e)}</div>
-        </div>\n'''
-
-        fig_label = f"{num}.2" if supervisors else f"{num}.1"
-        chart_html = f'''    <div class="chart-container">
-        <div class="chart-title">Figure {fig_label} &mdash; Ticket Assignment by Field Engineer (Completed / Total)</div>
-{chart_bars}    </div>
-''' if chart_bars else ""
-
-        fe_rows = ""
-        for i, eng in enumerate(top_fe, 1):
-            name = eng.get("EmployeeName", eng.get("EngineerName", "Unknown"))
-            regions = eng.get("_regions", [])
-            if not regions:
-                region = eng.get("RegionName", "")
-                regions = [region] if region else []
             completed = eng.get("CompletedTickets", 0)
             total_e = eng.get("TotalTickets", 0)
             rate_val = (completed / total_e * 100) if total_e > 0 else 0
-            rate_color = "#22c55e" if rate_val >= 80 else "#f59e0b" if rate_val >= 50 else "#ef4444"
-            rank_html = f'<span style="background:#fef3c7;color:#d97706;padding:2px 8px;border-radius:12px;font-weight:700;font-size:12px">{i}</span>' if i <= 3 else str(i)
-            region_badges = "".join(
-                f' <span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:8px;font-size:11px">{_esc(r)}</span>'
-                for r in regions if r
-            )
+            rate_str = f"{rate_val:.1f}%"
+            rate_color = "#10B981" if rate_val > 0 else "#EF4444"
+            color = eng_colors[i % len(eng_colors)]
+            bar_pct = max((total_e / max_tickets * 100), 0.5) if max_tickets > 0 else 0.5
 
-            fe_rows += f'''        <tr>
-            <td>{rank_html}</td>
-            <td style="font-weight:600">{_esc(name)}{region_badges}</td>
-            <td>{_fmt_num(total_e)}</td>
-            <td>{_fmt_num(completed)}</td>
-            <td><span style="color:{rate_color};font-weight:700">{rate_val:.1f}%</span></td>
-        </tr>\n'''
-
-        showing = f" (Top {len(top_fe)} of {fe_count})" if fe_count > 15 else ""
-        sub_num = f"{num}.2" if supervisors else f"{num}.1"
-
-        section_html += f'''    <div style="margin-top:20px">
-        <div style="font-weight:700;font-size:15px;color:#1e293b;margin-bottom:8px">
-            {sub_num} Field Engineers{showing}
-            <span style="font-weight:400;color:#64748b;font-size:13px">&mdash; {fe_count} engineer{'s' if fe_count != 1 else ''}, {_fmt_num(fe_total)} tickets, {fe_rate:.1f}% completion</span>
+            section_html += f'''    <div class="eng-row">
+        <div class="eng-top">
+            <span class="eng-name">{_esc(name)}</span>
+            <span class="eng-rate" style="color:{rate_color}">{rate_str}</span>
+        </div>
+        <div class="eng-bar-track">
+            <div class="eng-bar-fill" style="width:{bar_pct:.1f}%;background:{color};min-width:3px"></div>
+            <span class="eng-count">{_fmt_num(completed)}/{_fmt_num(total_e)}</span>
         </div>
     </div>
-{chart_html}    <table>
-        <thead><tr><th style="width:50px">#</th><th>Engineer</th><th>Total</th><th>Completed</th><th>Rate</th></tr></thead>
-        <tbody>
-{fe_rows}        </tbody>
-    </table>
 '''
 
-    # Insight
-    insight = ""
+    # Alert strip
+    alert = ""
     if avg_rate < 40:
-        insight = f'<div class="section-insight">&#9888; <strong>Low throughput:</strong> The overall completion rate of {avg_rate:.1f}% indicates significant backlog. Consider reviewing workload distribution and resource capacity.</div>'
-    elif field_engineers:
-        best = field_engineers[0]
-        best_name = best.get("EmployeeName", best.get("EngineerName", "Unknown"))
-        best_completed = best.get("CompletedTickets", 0)
-        best_total = best.get("TotalTickets", 0)
-        best_rate = (best_completed / best_total * 100) if best_total > 0 else 0
-        insight = f'<div class="section-insight">&#10003; <strong>Top performer:</strong> {_esc(best_name)} leads with {_fmt_num(best_completed)} completed tickets ({best_rate:.0f}% rate), handling {(best_total/total_tickets*100):.0f}% of the total workload.</div>'
+        alert = f'    <div class="alert-strip amber" style="margin-top:12px">&#9888; Low throughput: Review workload distribution and resource capacity.</div>\n'
 
-    section_html += f'''{insight}
-</div>
+    section_html += f'''{alert}</div>
 '''
     return section_html
 
 
 def _build_inventory_section(num: int, report_data: dict) -> str:
-    """Build the inventory consumption table with chart (capped at 15)."""
+    """Build the inventory consumption — compact table with dark headers."""
     inventory = report_data.get("inventory", [])
     if not inventory:
         return ""
 
-    # Aggregate by item name
     item_totals = {}
     for txn in inventory:
         name = txn.get("ItemName", "Unknown")
@@ -1320,93 +1532,46 @@ def _build_inventory_section(num: int, report_data: dict) -> str:
     if not item_totals:
         return ""
 
-    sorted_items = sorted(item_totals.items(), key=lambda x: x[1], reverse=True)[:15]
+    sorted_items = sorted(item_totals.items(), key=lambda x: x[1], reverse=True)[:10]
     max_qty = sorted_items[0][1] if sorted_items else 1
-    total_qty = sum(v for _, v in sorted_items)
 
-    # Description
-    inv_summary = report_data.get("inventory_summary", {})
-    total_all = inv_summary.get("TotalQuantity", total_qty)
-    unique_items = inv_summary.get("UniqueItems", len(item_totals))
-    desc = (f"Spare parts consumption tracking across {_fmt_num(unique_items)} unique items "
-            f"with {_fmt_num(total_all)} total units consumed. "
-            f"The table shows the top items by consumption volume.")
-
-    # Horizontal bar chart (top 8)
-    chart_bars = ""
-    inv_colors = ["#14b8a6", "#0ea5e9", "#3b82f6", "#6366f1", "#8b5cf6", "#22c55e", "#f59e0b", "#f97316"]
-    for i, (name, qty) in enumerate(sorted_items[:8]):
-        short_name = name[:22] + "..." if len(name) > 22 else name
-        pct = (qty / max_qty * 100) if max_qty > 0 else 0
-        color = inv_colors[i % len(inv_colors)]
-        chart_bars += f'''        <div class="hbar-row">
-            <div class="hbar-label" style="width:160px">{_esc(short_name)}</div>
-            <div class="hbar-track"><div class="hbar-fill" style="width:{pct:.0f}%;background:{color}">{_fmt_num(qty)}</div></div>
-            <div class="hbar-value">{_fmt_num(qty)}</div>
-        </div>\n'''
-
-    chart_html = f'''    <div class="chart-container">
-        <div class="chart-title">Figure {num}.1 &mdash; Top Items by Consumption Volume</div>
-{chart_bars}    </div>
-''' if chart_bars else ""
-
-    # Table
     table_rows = ""
     for name, qty in sorted_items:
-        bar_width = max(4, int((qty / max_qty) * 100))
-        table_rows += f'''        <tr>
-            <td style="font-weight:500">{_esc(name)}</td>
-            <td style="font-weight:600">{_fmt_num(qty)}</td>
-            <td><span class="pct-bar" style="width:{bar_width}px;background:#14b8a6"></span></td>
-        </tr>\n'''
+        pct = (qty / max_qty * 100) if max_qty > 0 else 0
+        bar_w = f"{max(pct, 1):.0f}%"
+        short_name = name[:28] + "..." if len(name) > 28 else name
+        table_rows += f'''            <tr>
+                <td class="name">{_esc(short_name)}</td>
+                <td class="num">{_fmt_num(qty)}</td>
+                <td><div class="bar-cell"><div class="bar-wrap"><div class="bar" style="width:{bar_w};background:#14B8A6"></div></div></div></td>
+            </tr>
+'''
 
-    total_items = len(item_totals)
-    showing = f" (Top {len(sorted_items)} of {total_items})" if total_items > 15 else ""
-
-    # Insight
-    insight = ""
-    if sorted_items:
-        top_name = sorted_items[0][0]
-        top_qty = sorted_items[0][1]
-        top_pct = (top_qty / total_all * 100) if total_all > 0 else 0
-        if top_pct > 30:
-            short = top_name[:30] + "..." if len(top_name) > 30 else top_name
-            insight = f'<div class="section-insight">&#8505; <strong>Concentration:</strong> "{_esc(short)}" accounts for {top_pct:.0f}% of total consumption. Monitor stock levels for this high-usage item.</div>'
-
-    return f'''<div class="section">
-    <div class="section-title"><span class="section-num">{num}</span> Inventory Consumption{showing}</div>
-    <p class="section-desc">{desc}</p>
-{chart_html}    <table>
-        <thead><tr><th>Item</th><th>Qty Consumed</th><th>Distribution</th></tr></thead>
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Inventory Consumption</h2>
+    <table class="compact-table">
+        <thead>
+            <tr><th>Item</th><th>Qty</th><th>Volume</th></tr>
+        </thead>
         <tbody>
 {table_rows}        </tbody>
     </table>
-{insight}
 </div>
 '''
 
 
 def _build_certifications_section(num: int, report_data: dict) -> str:
-    """Build the certifications status table."""
+    """Build the certifications status table — compact style."""
     certs = report_data.get("certifications", [])
     if not certs:
         return ""
 
-    top = certs[:15]
-
-    # Description
-    cert_summary = report_data.get("cert_summary", {})
-    total_certs = cert_summary.get("TotalCertifications", len(certs))
-    expired = sum(1 for c in certs if c.get("Status") == "Expired")
-    expiring = sum(1 for c in certs if c.get("Status") == "Expiring")
-    desc = (f"Certification compliance status for {_fmt_num(total_certs)} tracked certifications. "
-            f"{_fmt_num(expired)} expired and {_fmt_num(expiring)} expiring soon." if expired or expiring
-            else f"Certification compliance status for {_fmt_num(total_certs)} tracked certifications.")
+    top = certs[:10]
 
     status_styles = {
-        "Valid": ("background:#dcfce7;color:#16a34a", "&#10003;"),
-        "Expired": ("background:#fee2e2;color:#dc2626", "&#10007;"),
-        "Expiring": ("background:#fef3c7;color:#d97706", "&#9888;"),
+        "Valid": ("#D1FAE5", "#065F46"),
+        "Expired": ("#FEE2E2", "#B91C1C"),
+        "Expiring": ("#FEF3C7", "#B45309"),
     }
 
     table_rows = ""
@@ -1416,27 +1581,28 @@ def _build_certifications_section(num: int, report_data: dict) -> str:
         status = cert.get("Status", "Unknown")
         expiry = cert.get("ExpiryDate", "N/A")
 
-        style, icon = status_styles.get(status, ("background:#f1f5f9;color:#64748b", "&#8226;"))
-        table_rows += f'''        <tr>
-            <td>{_esc(name)}</td>
-            <td>{_esc(cert_name)}</td>
-            <td><span class="status-badge" style="{style}">{icon} {_esc(status)}</span></td>
-            <td>{_esc(expiry)}</td>
-        </tr>\n'''
+        badge_bg, badge_color = status_styles.get(status, ("#F1F5F9", "#64748B"))
+        table_rows += f'''            <tr>
+                <td class="name">{_esc(name)}</td>
+                <td class="muted">{_esc(cert_name)}</td>
+                <td><span class="badge" style="background:{badge_bg};color:{badge_color}">{_esc(status)}</span></td>
+                <td class="muted">{_esc(expiry)}</td>
+            </tr>
+'''
 
-    # Insight
-    insight = ""
+    expired = sum(1 for c in certs if c.get("Status") == "Expired")
+    alert = ""
     if expired > 0:
-        insight = f'<div class="section-insight">&#9888; <strong>Action required:</strong> {_fmt_num(expired)} certification(s) have expired. Schedule renewals immediately to maintain compliance.</div>'
+        alert = f'    <div class="alert-strip red">&#9888; {_fmt_num(expired)} certification(s) expired &mdash; renewals required.</div>\n'
 
-    return f'''<div class="section">
-    <div class="section-title"><span class="section-num">{num}</span> Certification Status</div>
-    <p class="section-desc">{desc}</p>
-    <table>
-        <thead><tr><th>Engineer</th><th>Certification</th><th>Status</th><th>Expiry Date</th></tr></thead>
+    return f'''<div class="section-block">
+    <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Certification Status</h2>
+    <table class="compact-table">
+        <thead>
+            <tr><th>Engineer</th><th>Certification</th><th>Status</th><th>Expiry</th></tr>
+        </thead>
         <tbody>
 {table_rows}        </tbody>
     </table>
-{insight}
-</div>
+{alert}</div>
 '''
