@@ -17,9 +17,10 @@ warnings.filterwarnings("ignore", message=".*Pydantic serializer warnings.*")
 # Suppress LiteLLM "Provider List" spam
 logging.getLogger("LiteLLM").setLevel(logging.WARNING)
 logging.getLogger("litellm").setLevel(logging.WARNING)
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
@@ -185,6 +186,60 @@ async def _load_history_into_session(session, session_id: str, session_service):
 
     logger.debug("[HISTORY] Loaded %d messages into session %s", len(db_messages), session_id)
 
+    # Restore report state from DB if a previous report exists in this session
+    # Scan messages (newest first) for report data in dedicated columns
+    for msg in reversed(db_messages):
+        report_html = msg.get("ReportHtml") or ""
+        report_model_str = msg.get("ReportModelJson") or ""
+
+        # Fallback: check Content field for legacy delimiter-embedded reports
+        if not report_html:
+            content_text = msg.get("Content", "")
+            if content_text and "<!--REPORT_START-->" in content_text:
+                _rm = re.search(r'<!--REPORT_START-->(.*?)<!--REPORT_END-->', content_text, re.DOTALL)
+                if _rm:
+                    report_html = _rm.group(1).strip()
+                if not report_model_str:
+                    _mm = re.search(r'<!--REPORT_MODEL_START-->(.*?)<!--REPORT_MODEL_END-->', content_text, re.DOTALL)
+                    if _mm:
+                        report_model_str = _mm.group(1).strip()
+
+        if not report_html:
+            continue
+
+        # Found a report — restore into session state
+        session.state["last_report_html"] = report_html
+
+        if report_model_str:
+            try:
+                session.state["report_model"] = json.loads(report_model_str)
+                logger.info("[HISTORY] Restored report_model + HTML (%d chars) from DB columns in session %s", len(report_html), session_id)
+            except (json.JSONDecodeError, Exception):
+                logger.warning("[HISTORY] Failed to parse ReportModelJson, using minimal model")
+                report_model_str = ""  # Fall through to minimal model
+
+        # Fallback: build a minimal model (for old sessions without persisted model)
+        if not report_model_str and "report_model" not in session.state:
+            session.state["report_model"] = {
+                "title": "Report",
+                "subtitle_line": "",
+                "executive_summary": "",
+                "insights": "",
+                "discussion": "",
+                "emphasis": "",
+                "report_data": {},
+                "gen_date": "",
+                "visible_sections": ["tickets", "ticket_types", "engineers", "certifications", "inventory"],
+                "kpi_visible": True,
+                "hidden_kpi_labels": [],
+                "style_overrides": {},
+                "version": 1,
+                "edit_history": [],
+                "_restored_from_db": True,
+            }
+            logger.info("[HISTORY] Restored report HTML (%d chars) + minimal model into session %s", len(report_html), session_id)
+        break
+
 
 from my_agent import root_agent
 from my_agent.tools.chart_guardrails import (
@@ -199,6 +254,8 @@ from my_agent.tools.chat_history import (
     ensure_session,
     save_message,
     update_session_title,
+    update_report_in_message,
+    get_report_model_from_db,
     get_sessions,
     get_session_messages,
     delete_session,
@@ -207,6 +264,17 @@ from my_agent.tools.chat_history import (
 
 # Initialize FastAPI app
 app = FastAPI(title="OIP Chat Agent API", version="1.0.0")
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Return clear JSON errors for Pydantic validation failures (instead of 422 HTML)."""
+    logger.warning(f"[VALIDATION ERROR] {request.url.path}: {exc.errors()}")
+    return JSONResponse(
+        status_code=422,
+        content={"status": "error", "message": "Invalid request", "details": exc.errors()},
+    )
+
 
 # CORS — restrict to known frontend origins
 ALLOWED_ORIGINS = os.getenv(
@@ -421,6 +489,14 @@ async def list_sessions(userId: int):
 async def load_session_messages(session_id: str):
     """Return all messages for a given session."""
     msgs = get_session_messages(session_id)
+    # Normalize keys for frontend: ReportHtml → reportHtml, ReportModelJson → reportModelJson
+    for msg in msgs:
+        rh = msg.pop("ReportHtml", None)
+        rm = msg.pop("ReportModelJson", None)
+        if rh:
+            msg["reportHtml"] = rh
+        if rm:
+            msg["reportModelJson"] = rm
     return {"messages": msgs}
 
 
@@ -451,6 +527,283 @@ async def rename_session(session_id: str, body: TitleUpdate):
     """Rename a chat session."""
     ok = update_session_title(session_id, body.title)
     return {"success": ok}
+
+
+# ---------------------------------------------------------------------------
+# Inline report editing endpoint (bypasses chat agent for fast edits)
+# ---------------------------------------------------------------------------
+
+class ReportEditRequest(BaseModel):
+    session_id: str = Field(alias="sessionId")
+    user_id: str = Field(default="", alias="userId")
+    section_id: Optional[str] = Field(None, alias="sectionId")
+    action: str  # manual_update | regenerate | hide | restore | style_change | undo
+    new_text: Optional[str] = Field(None, alias="newText")
+    prompt: Optional[str] = None
+    style_key: Optional[str] = Field(None, alias="styleKey")
+    style_value: Optional[str] = Field(None, alias="styleValue")
+
+    class Config:
+        populate_by_name = True
+
+
+class _InlineToolContext:
+    """Lightweight ToolContext substitute for inline edits (no ADK agent involved)."""
+
+    def __init__(self, state: dict):
+        self.state = state
+
+
+@app.post("/report/edit")
+async def edit_report_inline(request: ReportEditRequest):
+    """Direct report editing endpoint — bypasses chat agent for fast inline edits.
+
+    The frontend calls this when the user interacts with hover toolbars on the
+    rendered report (edit text, hide sections, change colors, etc.).
+    Returns the full updated report HTML for iframe replacement.
+    """
+    from my_agent.tools.report_editor_tools import (
+        toggle_kpi_card as _toggle_kpi,
+        remove_report_section as _remove_section,
+        restore_report_section as _restore_section,
+        rewrite_report_text as _rewrite_text,
+        customize_report_style as _customize_style,
+        undo_report_edit as _undo_edit,
+        rebuild_report_html as _rebuild,
+        regenerate_section as _regenerate_section,
+    )
+
+    session_id = request.session_id
+    user_id = request.user_id
+    action = request.action
+    logger.info(f"[REPORT EDIT] action={action} section={request.section_id} user={user_id} session={session_id} prompt={request.prompt!r}")
+
+    # Get ADK session to access report_model (keyed by app_name + user_id + session_id)
+    session = None
+    if user_id:
+        session = await session_service.get_session(
+            app_name="oip_assistant",
+            user_id=user_id,
+            session_id=session_id,
+        )
+
+    # Fallback: scan InMemorySessionService for session_id if userId wasn't sent or didn't match
+    if session is None and hasattr(session_service, 'sessions'):
+        app_sessions = session_service.sessions.get("oip_assistant", {})
+        for uid, user_sessions in app_sessions.items():
+            if session_id in user_sessions:
+                session = user_sessions[session_id]
+                logger.info(f"[REPORT EDIT] Found session via fallback scan (user_id={uid})")
+                break
+
+    # If session not in memory or missing report_model, always try DB restore
+    has_model = session is not None and "report_model" in session.state
+    if not has_model:
+        logger.info(f"[REPORT EDIT] report_model not in memory, loading from DB for {session_id}")
+        db_model, db_html = get_report_model_from_db(session_id)
+        if db_model:
+            if session is not None:
+                # Session exists but missing report_model — inject it
+                session.state["report_model"] = db_model
+                session.state["last_report_html"] = db_html
+            else:
+                # No session at all — create a lightweight wrapper
+                class _RestoreSession:
+                    def __init__(self, state):
+                        self.state = state
+                session = _RestoreSession({"report_model": db_model, "last_report_html": db_html})
+            logger.info(f"[REPORT EDIT] Restored report_model from DB")
+        else:
+            return JSONResponse(status_code=404, content={
+                "status": "no_report",
+                "message": "No report found. Please generate a new report.",
+            })
+
+    # Create lightweight tool context wrapping the session state
+    ctx = _InlineToolContext(session.state)
+
+    # Dispatch action
+    result = None
+    try:
+        if action == "manual_update":
+            if not request.section_id or not request.new_text:
+                return JSONResponse(status_code=400, content={
+                    "status": "error", "message": "section_id and new_text are required for manual_update"
+                })
+            result = _rewrite_text(
+                section_id=request.section_id,
+                new_text=request.new_text,
+                tool_context=ctx,
+            )
+
+        elif action == "hide":
+            sid = request.section_id
+            if sid.startswith("kpi:"):
+                card_label = sid[4:]  # Strip "kpi:" prefix
+                result = _toggle_kpi(card_label=card_label, visible=False, tool_context=ctx)
+            else:
+                result = _remove_section(section_id=sid, tool_context=ctx)
+
+        elif action == "restore":
+            sid = request.section_id
+            if sid.startswith("kpi:"):
+                card_label = sid[4:]
+                result = _toggle_kpi(card_label=card_label, visible=True, tool_context=ctx)
+            else:
+                result = _restore_section(section_id=sid, tool_context=ctx)
+
+        elif action == "style_change":
+            if not request.style_key or not request.style_value:
+                return JSONResponse(status_code=400, content={
+                    "status": "error", "message": "style_key and style_value are required for style_change"
+                })
+            result = _customize_style(
+                **{request.style_key: request.style_value},
+                tool_context=ctx,
+            )
+
+        elif action == "undo":
+            result = _undo_edit(tool_context=ctx)
+
+        elif action == "regenerate":
+            if not request.section_id:
+                return JSONResponse(status_code=400, content={
+                    "status": "error", "message": "section_id is required for regenerate"
+                })
+            # Default prompt if none provided
+            prompt = request.prompt or "Improve this section — make it more detailed, analytical, and professional."
+            result = await _regenerate_section(
+                section_id=request.section_id,
+                prompt=prompt,
+                tool_context=ctx,
+            )
+
+        else:
+            return JSONResponse(status_code=400, content={
+                "status": "error", "message": f"Unknown action: {action}",
+            })
+
+    except Exception as e:
+        logger.error(f"[REPORT EDIT] Error in inline edit: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"Edit failed: {str(e)}",
+        })
+
+    # Check result status
+    if not result or result.get("status") in ("error", "no_report"):
+        status_code = 404 if result and result.get("status") == "no_report" else 400
+        return JSONResponse(status_code=status_code, content=result or {"status": "error", "message": "Unknown error"})
+
+    # Sync state back to ADK session (ctx.state is the same dict reference)
+    # The editor tools already updated ctx.state["report_model"] and ctx.state["last_report_html"]
+
+    # Persist updated report to DB (silent update, no new chat message)
+    report_html = ctx.state.get("last_report_html", "")
+    report_model = ctx.state.get("report_model")
+    if report_html and report_model:
+        try:
+            model_json = json.dumps(report_model, default=str)
+            update_report_in_message(session_id, report_html, model_json)
+        except Exception as e:
+            logger.warning(f"[REPORT EDIT] Failed to persist to DB: {e}")
+
+    return {
+        "status": "success",
+        "version": result.get("version", 1),
+        "reportHtml": report_html,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Report PDF download endpoint (server-side HTML → A4 PDF via WeasyPrint)
+# ---------------------------------------------------------------------------
+
+class ReportPdfRequest(BaseModel):
+    session_id: str = Field(alias="sessionId")
+    user_id: str = Field(default="", alias="userId")
+
+    class Config:
+        populate_by_name = True
+
+
+@app.post("/report/pdf")
+async def download_report_pdf(request: ReportPdfRequest):
+    """Generate an A4 PDF from the current report HTML and return it as a downloadable file."""
+    from fastapi.responses import Response
+
+    session_id = request.session_id
+    user_id = request.user_id
+
+    # Always load from DB first — this is the most reliable source after edits,
+    # since inline edits persist to DB but may use a different in-memory session.
+    report_html = None
+
+    # 1. Try DB (authoritative — always has the latest after inline edits)
+    msgs = get_session_messages(session_id)
+    for msg in reversed(msgs):
+        rh = msg.get("ReportHtml")
+        if rh:
+            report_html = rh
+            break
+
+    # 2. Fallback: in-memory ADK session (for reports that haven't been persisted yet)
+    if not report_html:
+        if user_id:
+            session = await session_service.get_session(
+                app_name="oip_assistant", user_id=user_id, session_id=session_id,
+            )
+            if session:
+                report_html = session.state.get("last_report_html")
+
+        if not report_html and hasattr(session_service, 'sessions'):
+            app_sessions = session_service.sessions.get("oip_assistant", {})
+            for uid, user_sessions in app_sessions.items():
+                if session_id in user_sessions:
+                    report_html = user_sessions[session_id].state.get("last_report_html")
+                    break
+
+    if not report_html:
+        return JSONResponse(status_code=404, content={
+            "status": "error", "message": "No report found in this session."
+        })
+
+    # Generate PDF using Playwright (headless Chromium — pixel-perfect A4 output)
+    try:
+        from playwright.async_api import async_playwright
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            # Set viewport to A4 width (794px) so CSS renders identically to screen
+            page = await browser.new_page(viewport={"width": 794, "height": 1123})
+            await page.set_content(report_html, wait_until="networkidle")
+            pdf_bytes = await page.pdf(
+                format="A4",
+                print_background=True,
+                margin={"top": "5mm", "bottom": "5mm", "left": "5mm", "right": "5mm"},
+                prefer_css_page_size=True,
+            )
+            await browser.close()
+
+        # Extract title from HTML for filename
+        title_match = re.search(r'<h1[^>]*>(.*?)</h1>', report_html, re.DOTALL)
+        filename = "Report"
+        if title_match:
+            filename = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+            filename = re.sub(r'[^\w\s-]', '', filename).strip()[:60]
+        filename = f"{filename}.pdf"
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+    except Exception as e:
+        logger.error(f"[REPORT PDF] Failed to generate PDF: {e}", exc_info=True)
+        return JSONResponse(status_code=500, content={
+            "status": "error", "message": f"PDF generation failed: {str(e)}",
+        })
 
 
 @app.post("/run_sse")
@@ -573,6 +926,7 @@ async def run_sse(request: RunSSERequest):
             captured_chart_html = ""  # Chart tool output captured from function_response
             captured_report_html = "" # Report HTML captured from build_html_report response
             report_tool_called = False  # Track if report_generator was invoked this request
+            report_editor_called = False  # Track if report_editor tools were used this request
             streamed_text = ""       # text already sent to client via partial chunks
             final_response_text = "" # complete text from the final event (for DB)
 
@@ -612,6 +966,7 @@ async def run_sse(request: RunSSERequest):
                             "report_data_collector": "Step 2/3 — Querying ticket, engineer & inventory databases...",
                             "report_builder": "Step 3/3 — Crafting executive summary, insights & formatting report...",
                             "report_generator": "Initializing report pipeline...",
+                            "report_editor": "Editing your report...",
                         }
                         status = status_map.get(agent_name, "Working on it...")
                         print(f"[STATUS] Agent transition: {agent_name} -> '{status}'")
@@ -631,6 +986,10 @@ async def run_sse(request: RunSSERequest):
                                 # Detect report generator call
                                 if tool_name == "report_generator":
                                     report_tool_called = True
+                                # Detect report editor tool calls
+                                EDITOR_TOOL_NAMES = {"toggle_kpi_card", "remove_report_section", "restore_report_section", "rewrite_report_text", "customize_report_style", "rebuild_report_html", "undo_report_edit"}
+                                if tool_name in EDITOR_TOOL_NAMES:
+                                    report_editor_called = True
                                 tool_status_map = {
                                     "search_oip_documents": "Searching documentation...",
                                     "get_ticket_summary": "Fetching your tickets...",
@@ -654,6 +1013,13 @@ async def run_sse(request: RunSSERequest):
                                     "collect_report_data": "Querying databases — tickets, engineers, inventory & timeline...",
                                     "build_html_report": "Building KPI cards, tables & formatting final document...",
                                     "report_generator": "Starting report generation pipeline...",
+                                    "toggle_kpi_card": "Updating KPI cards...",
+                                    "remove_report_section": "Removing section from report...",
+                                    "restore_report_section": "Restoring section to report...",
+                                    "rewrite_report_text": "Rewriting report text...",
+                                    "customize_report_style": "Applying style changes...",
+                                    "rebuild_report_html": "Rebuilding report...",
+                                    "undo_report_edit": "Undoing last edit...",
                                     "transfer_to_agent": "Routing to specialist...",
                                 }
                                 status = tool_status_map.get(tool_name, "Processing...")
@@ -671,10 +1037,23 @@ async def run_sse(request: RunSSERequest):
                                 "collect_report_data": "All data collected — ticket stats, engineer performance & inventory ready!",
                                 "build_html_report": "Report assembled — KPI cards, tables & styling complete!",
                                 "report_generator": "Report generated successfully — preparing preview...",
+                                "toggle_kpi_card": "KPI card updated!",
+                                "remove_report_section": "Section removed from report!",
+                                "restore_report_section": "Section restored to report!",
+                                "rewrite_report_text": "Text updated!",
+                                "customize_report_style": "Style applied!",
+                                "rebuild_report_html": "Report rebuilt!",
+                                "undo_report_edit": "Edit undone — previous version restored!",
                             }
                             if resp_name in report_tool_status:
-                                print(f"[STATUS] Tool done: {resp_name} -> '{report_tool_status[resp_name]}'")
-                                yield f"data: {json.dumps({'status': report_tool_status[resp_name]})}\n\n"
+                                # Don't show success status if the tool returned an error
+                                _resp_data = getattr(part.function_response, 'response', None)
+                                _is_error = isinstance(_resp_data, dict) and _resp_data.get("status") in ("error", "no_report")
+                                if not _is_error:
+                                    print(f"[STATUS] Tool done: {resp_name} -> '{report_tool_status[resp_name]}'")
+                                    yield f"data: {json.dumps({'status': report_tool_status[resp_name]})}\n\n"
+                                else:
+                                    print(f"[STATUS] Tool done: {resp_name} -> ERROR (suppressing success status)")
                             if resp_name in CHART_TOOL_NAMES:
                                 resp_data = getattr(part.function_response, 'response', None)
                                 # ADK wraps string returns as {"result": str}
@@ -866,11 +1245,12 @@ async def run_sse(request: RunSSERequest):
             # Fallback: read from session state (when report_generator runs as AgentTool,
             # internal tool responses aren't visible in the event stream)
             # ONLY use this fallback if report_generator was actually called this request
-            if not report_html_str and report_tool_called:
+            if not report_html_str and (report_tool_called or report_editor_called):
                 stored_report = s_state.get("last_report_html")
                 if stored_report and isinstance(stored_report, str) and len(stored_report) > 100:
                     report_html_str = stored_report
-                    print(f"[REPORT INJECT] Fallback: session state last_report_html ({len(report_html_str)} chars)")
+                    source = "report_editor" if report_editor_called else "report_generator"
+                    print(f"[REPORT INJECT] Fallback: session state last_report_html via {source} ({len(report_html_str)} chars)")
             # Strip report delimiters from raw_text so chat bubble only shows summary
             if report_html_str and raw_text:
                 raw_text = re.sub(r'<!--REPORT_START-->.*?<!--REPORT_END-->', '', raw_text, flags=re.DOTALL).strip()
@@ -939,10 +1319,22 @@ async def run_sse(request: RunSSERequest):
                 # Single chart or no placeholders: append chart blocks at end
                 for cfg in validated_configs:
                     db_content += f"<!--CHART_START-->{cfg}<!--CHART_END-->"
+            # Prepare report data for dedicated DB columns (not embedded in Content)
+            db_report_html = report_html_str if report_html_str else None
+            db_report_model_json = None
             if report_html_str:
-                db_content += f"<!--REPORT_START-->{report_html_str}<!--REPORT_END-->"
+                _model = s_state.get("report_model")
+                if _model:
+                    try:
+                        db_report_model_json = json.dumps(_model, default=str)
+                    except Exception:
+                        pass  # Non-critical — editing will have limited functionality
             if db_content and db_user_id is not None:
-                save_message(session_id, "assistant", db_content)
+                save_message(
+                    session_id, "assistant", db_content,
+                    report_html=db_report_html,
+                    report_model_json=db_report_model_json,
+                )
                 # Update session title based on latest exchange (background)
                 asyncio.create_task(
                     _generate_session_title(session_id, raw_user_text, clean_text)
@@ -994,9 +1386,28 @@ async def run_sse(request: RunSSERequest):
         # Layer 2 chart guardrail: re-wrap orphaned chart JSON with delimiters
         response_text = ensure_chart_delimiters(response_text)
 
-        # ── Persist assistant response ──
+        # ── Persist assistant response (with report columns if applicable) ──
+        ns_report_html = None
+        ns_report_model_json = None
+        try:
+            ns_session = await session_service.get_session(
+                app_name="oip_assistant", user_id=user_id, session_id=session_id,
+            )
+            if ns_session:
+                ns_rhtml = ns_session.state.get("last_report_html")
+                ns_model = ns_session.state.get("report_model")
+                if ns_rhtml:
+                    ns_report_html = ns_rhtml
+                if ns_model:
+                    ns_report_model_json = json.dumps(ns_model, default=str)
+        except Exception:
+            pass
         if response_text and db_user_id is not None:
-            save_message(session_id, "assistant", response_text)
+            save_message(
+                session_id, "assistant", response_text,
+                report_html=ns_report_html,
+                report_model_json=ns_report_model_json,
+            )
             # Update session title based on latest exchange (background)
             asyncio.create_task(
                 _generate_session_title(session_id, raw_user_text, response_text)

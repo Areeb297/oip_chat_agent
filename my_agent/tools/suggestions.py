@@ -99,6 +99,13 @@ _INVENTORY_CHART_SUGGESTIONS = [
     "Compare to last month",
 ]
 
+_REPORT_SUGGESTIONS = [
+    "Remove a KPI card from the report",
+    "Rewrite the executive summary",
+    "Hide the inventory section",
+    "Change report colors or styling",
+]
+
 _GENERIC_SUGGESTIONS = [
     "What are my open tickets?",
     "Show engineer daily logs",
@@ -113,6 +120,16 @@ def _get_rule_based_suggestions(
     session_state: Optional[Dict],
 ) -> List[str]:
     """Build rule-based suggestions from agent type and session context."""
+
+    # Report-specific: if a report was just generated, suggest editing actions
+    state = session_state or {}
+    has_report = bool(state.get("last_report_html"))
+    if has_report and (
+        agent_name in ("report_generator", "report_editor")
+        or "report" in (agent_response or "").lower()[:200]
+        or "<!--REPORT_START-->" in (agent_response or "")
+    ):
+        return list(_REPORT_SUGGESTIONS)
 
     if agent_name == "greeter":
         return list(_GREETER_SUGGESTIONS)
@@ -199,6 +216,8 @@ async def _generate_suggestions_llm(
             "engineer_analytics": "Engineer performance, daily activity logs (hours, distance, activity types), certifications, engineer charts.",
             "inventory_analytics": "Spare parts consumption, parts per site/category/project, inventory charts.",
             "oip_expert": "OIP platform documentation, how-to guides, system modules, workflows.",
+            "report_generator": "Generated a report. User can edit sections, remove KPI cards, rewrite text, hide sections, or download as Word.",
+            "report_editor": "Editing a report. User can make further edits, undo changes, or download.",
         }
 
         # Build user context snippet

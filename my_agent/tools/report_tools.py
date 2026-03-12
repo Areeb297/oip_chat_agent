@@ -377,6 +377,154 @@ def collect_report_data(
 
 
 # =============================================================================
+# REBUILD FROM MODEL (core rendering engine — used by build_html_report + editor)
+# =============================================================================
+
+def _rebuild_from_model(model: dict) -> str:
+    """Render a complete HTML report from a report_model dict.
+
+    This is the single rendering path for both initial generation and edits.
+    All _build_* section functions are called here based on model state.
+
+    Args:
+        model: The report_model dict containing title, report_data, visible_sections,
+               executive_summary, insights, discussion, style_overrides, etc.
+
+    Returns:
+        Complete self-contained HTML string.
+    """
+    title = model.get("title", "Report")
+    subtitle_line = model.get("subtitle_line", "Project Performance Report")
+    executive_summary = model.get("executive_summary", "")
+    insights = model.get("insights", "")
+    discussion = model.get("discussion", "")
+    report_data = model.get("report_data", {})
+    gen_date = model.get("gen_date", datetime.now().strftime("%d %B %Y"))
+    gen_time = model.get("gen_time", datetime.now().strftime("%I:%M %p"))
+    visible_sections = model.get("visible_sections", [])
+    kpi_visible = model.get("kpi_visible", True)
+    style_overrides = model.get("style_overrides", {})
+
+    logo_uri = _get_logo_base64()
+
+    # ── Build content sections (numbered, skip hidden) ──
+    section_num = 1
+
+    # LEFT COLUMN
+    left_html = ""
+
+    if executive_summary:
+        left_html += _build_executive_summary(section_num, executive_summary)
+        section_num += 1
+
+    if insights:
+        left_html += _build_insights(section_num, insights)
+        section_num += 1
+
+    totals = report_data.get("ticket_totals", {})
+    if "tickets" in visible_sections and totals.get("TotalTickets", 0) > 0:
+        left_html += _build_ticket_section(section_num, report_data)
+        section_num += 1
+
+    type_data = report_data.get("ticket_types", [])
+    if "ticket_types" in visible_sections and any(td.get("TotalTickets", 0) > 0 for td in type_data):
+        left_html += _build_task_type_section(section_num, report_data)
+        section_num += 1
+
+    inventory = report_data.get("inventory", [])
+    if "inventory" in visible_sections and any(txn.get("Quantity", 0) > 0 for txn in inventory):
+        left_html += _build_inventory_section(section_num, report_data)
+        section_num += 1
+
+    # RIGHT COLUMN
+    right_html = ""
+
+    engineers = report_data.get("engineers", [])
+    if "engineers" in visible_sections and any(e.get("TotalTickets", 0) > 0 for e in engineers):
+        right_html += _build_engineers_section(section_num, report_data)
+        section_num += 1
+
+    certs = report_data.get("certifications", [])
+    if "certifications" in visible_sections and certs:
+        right_html += _build_certifications_section(section_num, report_data)
+        section_num += 1
+
+    if discussion:
+        right_html += _build_discussion(section_num, discussion)
+        section_num += 1
+
+    # KPI Cards
+    hidden_kpi = set(model.get("hidden_kpi_labels", []))
+    kpi_html = _build_kpi_cards(report_data, hidden_kpi_labels=hidden_kpi, style_overrides=style_overrides) if kpi_visible else ""
+
+    # Two-column body
+    if left_html or right_html:
+        body_html = f'''<div class="two-col">
+    <div class="col-left">{left_html}</div>
+    <div class="col-right">{right_html}</div>
+</div>'''
+    else:
+        body_html = '''<div style="text-align:center;padding:40px 20px;color:#64748b;">
+    <div style="font-size:36px;margin-bottom:8px;">&#128202;</div>
+    <p>No data available for the selected filters and period.</p>
+    <p style="font-size:10px;color:#94a3b8;margin-top:4px;">Try adjusting the project, date range, or team filters.</p>
+</div>'''
+
+    proj_label = report_data.get("project_names", "All Projects")
+
+    # ── Assemble full HTML document ──
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>{_esc(title)}</title>
+<style>
+{_get_report_css(style_overrides)}
+</style>
+</head>
+<body>
+<div class="report-root">
+<div class="page">
+    <div class="page-header-band" data-section-id="header" data-edit-type="style">
+        <div class="header-left">
+            <img src="{logo_uri}" alt="Ebttikar OIP" class="header-logo">
+            <div class="header-title-block">
+                <h1 class="report-title" data-section-id="title" data-edit-type="text">{_esc(title)}</h1>
+                <p class="report-subtitle">{subtitle_line}</p>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="header-meta-item">
+                <span class="meta-label">Generated</span>
+                <span class="meta-value">{gen_date}</span>
+                <span class="meta-label" style="margin-top:1px">{gen_time}</span>
+            </div>
+            <div class="header-meta-item">
+                <span class="meta-label">Prepared by</span>
+                <span class="meta-value">Ebttikar OIP</span>
+            </div>
+            <div class="header-meta-item">
+                <span class="meta-label">Classification</span>
+                <span class="meta-value confidential">Confidential</span>
+            </div>
+        </div>
+    </div>
+    <div class="accent-bar"></div>
+    <div class="page-body">
+{kpi_html}
+{body_html}
+    </div>
+    <div class="page-footer">
+        <span>{_esc(proj_label)} &mdash; Project Performance Report &middot; {gen_date} &middot; Confidential</span>
+        <span>Powered by Onasi &middot; &copy; 2026 Onasi-CloudTech</span>
+    </div>
+</div>
+</div>
+</body>
+</html>"""
+
+
+# =============================================================================
 # TOOL 2: build_html_report
 # =============================================================================
 
@@ -426,8 +574,8 @@ def build_html_report(
 
         print(f"[REPORT BUILD] title={title}, sections={report_data.get('sections_collected', [])}")
 
-        logo_uri = _get_logo_base64()
         gen_date = datetime.now().strftime("%d %B %Y")
+        gen_time = datetime.now().strftime("%I:%M %p")
 
         # Build subtitle line
         subtitle_parts = []
@@ -446,140 +594,34 @@ def build_html_report(
         if subtitle_parts:
             subtitle_line += " &middot; " + " &middot; ".join(subtitle_parts)
 
-        # ── Build content sections (numbered) ──
-        section_num = 1
+        # ── Build report_model for editing support ──
+        model = {
+            "title": title,
+            "subtitle_line": subtitle_line,
+            "executive_summary": executive_summary or "",
+            "insights": insights or "",
+            "discussion": discussion or "",
+            "emphasis": emphasis or "",
+            "report_data": report_data,
+            "gen_date": gen_date,
+            "gen_time": gen_time,
+            "visible_sections": list(report_data.get("sections_collected", [])),
+            "kpi_visible": True,
+            "hidden_kpi_labels": [],
+            "style_overrides": {},
+            "version": 1,
+            "edit_history": [],
+        }
 
-        # LEFT COLUMN: Executive Summary, Key Insights, Ticket Status
-        left_html = ""
+        # ── Render HTML from model ──
+        html = _rebuild_from_model(model)
 
-        # Executive Summary
-        if executive_summary:
-            left_html += _build_executive_summary(section_num, executive_summary)
-            section_num += 1
-
-        # Key Insights
-        insights_num = section_num
-        if insights:
-            left_html += _build_insights(section_num, insights)
-            section_num += 1
-
-        # Ticket Status Table
-        totals = report_data.get("ticket_totals", {})
-        has_ticket_data = totals.get("TotalTickets", 0) > 0
-        if "tickets" in report_data.get("sections_collected", []) and has_ticket_data:
-            left_html += _build_ticket_section(section_num, report_data)
-            section_num += 1
-
-        # Task Type Breakdown (compact, fits in left column)
-        type_data = report_data.get("ticket_types", [])
-        has_type_data = any(td.get("TotalTickets", 0) > 0 for td in type_data)
-        if "ticket_types" in report_data.get("sections_collected", []) and has_type_data:
-            left_html += _build_task_type_section(section_num, report_data)
-            section_num += 1
-
-        # Inventory (if present, add to left)
-        inventory = report_data.get("inventory", [])
-        has_inv_data = any(txn.get("Quantity", 0) > 0 for txn in inventory)
-        if "inventory" in report_data.get("sections_collected", []) and has_inv_data:
-            left_html += _build_inventory_section(section_num, report_data)
-            section_num += 1
-
-        # RIGHT COLUMN: Team Performance, Recommendations
-        right_html = ""
-
-        # Top Engineers
-        engineers = report_data.get("engineers", [])
-        has_eng_data = any(e.get("TotalTickets", 0) > 0 for e in engineers)
-        if "engineers" in report_data.get("sections_collected", []) and has_eng_data:
-            right_html += _build_engineers_section(section_num, report_data)
-            section_num += 1
-
-        # Certifications (add to right column)
-        certs = report_data.get("certifications", [])
-        if "certifications" in report_data.get("sections_collected", []) and certs:
-            right_html += _build_certifications_section(section_num, report_data)
-            section_num += 1
-
-        # Discussion / Recommendations (right column)
-        if discussion:
-            right_html += _build_discussion(section_num, discussion)
-            section_num += 1
-
-        # KPI Cards row
-        kpi_html = _build_kpi_cards(report_data)
-
-        # Two-column body
-        body_html = ""
-        if left_html or right_html:
-            body_html = f'''<div class="two-col">
-    <div class="col-left">{left_html}</div>
-    <div class="col-right">{right_html}</div>
-</div>'''
-        else:
-            body_html = '''<div style="text-align:center;padding:40px 20px;color:#64748b;">
-    <div style="font-size:36px;margin-bottom:8px;">&#128202;</div>
-    <p>No data available for the selected filters and period.</p>
-    <p style="font-size:10px;color:#94a3b8;margin-top:4px;">Try adjusting the project, date range, or team filters.</p>
-</div>'''
-
-        # Project label for footer
-        proj_label = report_data.get("project_names", "All Projects")
-
-        # ── Assemble full HTML document ──
-        html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>{_esc(title)}</title>
-<style>
-{_get_report_css()}
-</style>
-</head>
-<body>
-<div class="report-root">
-<div class="page">
-    <div class="page-header-band">
-        <div class="header-left">
-            <img src="{logo_uri}" alt="Ebttikar OIP" class="header-logo">
-            <div class="header-title-block">
-                <h1 class="report-title">{_esc(title)}</h1>
-                <p class="report-subtitle">{subtitle_line}</p>
-            </div>
-        </div>
-        <div class="header-right">
-            <div class="header-meta-item">
-                <span class="meta-label">Date</span>
-                <span class="meta-value">{gen_date}</span>
-            </div>
-            <div class="header-meta-item">
-                <span class="meta-label">Prepared by</span>
-                <span class="meta-value">Ebttikar OIP</span>
-            </div>
-            <div class="header-meta-item">
-                <span class="meta-label">Classification</span>
-                <span class="meta-value confidential">Confidential</span>
-            </div>
-        </div>
-    </div>
-    <div class="accent-bar"></div>
-    <div class="page-body">
-{kpi_html}
-{body_html}
-    </div>
-    <div class="page-footer">
-        <span>{_esc(proj_label)} &mdash; Project Performance Report &middot; {gen_date} &middot; Confidential</span>
-        <span>Powered by Onasi &middot; &copy; 2026 Onasi-CloudTech</span>
-    </div>
-</div>
-</div>
-</body>
-</html>"""
-
-        # Store in session
+        # Store model + HTML in session
+        tool_context.state["report_model"] = model
         tool_context.state["last_report_html"] = html
         tool_context.state["last_query_context"] = "report"
 
-        print(f"[REPORT BUILD] Done: {len(html)} chars HTML")
+        print(f"[REPORT BUILD] Done: {len(html)} chars HTML, model saved to session")
 
         # Return with report delimiters for main.py to detect
         return {
@@ -600,15 +642,43 @@ def build_html_report(
 # CSS
 # =============================================================================
 
-def _get_report_css() -> str:
-    """Return the complete CSS for the report — compact A4-like design."""
-    return """@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap');
+def _get_report_css(style_overrides: dict = None) -> str:
+    """Return the complete CSS for the report — compact A4-like design.
+
+    Args:
+        style_overrides: Optional dict of CSS overrides from report_model.
+            Keys: header_bg, accent_color, header_border, section_badge_color,
+            table_header_bg, table_header_text, font_family, title_font, kpi_style.
+    """
+    s = style_overrides or {}
+
+    # Build CSS from template, then replace placeholders
+    css = _BASE_REPORT_CSS
+
+    replacements = {
+        "/*VAR:FONT_FAMILY*/": s.get("font_family", "'Inter', system-ui, -apple-system, sans-serif"),
+        "/*VAR:TITLE_FONT*/": s.get("title_font", "'Playfair Display', Georgia, serif"),
+        "/*VAR:HEADER_BG*/": s.get("header_bg", "#EEF2FF"),
+        "/*VAR:HEADER_BORDER*/": s.get("header_border", "#2746E3"),
+        "/*VAR:ACCENT_GRADIENT*/": s.get("accent_gradient", "linear-gradient(90deg, #1D4ED8 0%, #7C3AED 50%, #06B6D4 100%)"),
+        "/*VAR:BADGE_COLOR*/": s.get("section_badge_color", "#2746E3"),
+        "/*VAR:TABLE_HDR_BG*/": s.get("table_header_bg", "#0F172A"),
+        "/*VAR:TABLE_HDR_TEXT*/": s.get("table_header_text", "#94A3B8"),
+    }
+    for placeholder, value in replacements.items():
+        css = css.replace(placeholder, value)
+
+    return css
+
+
+# The base CSS template — uses /*VAR:NAME*/ placeholders for style_overrides
+_BASE_REPORT_CSS = """@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap');
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 /* ── Root ── */
 .report-root {
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    font-family: /*VAR:FONT_FAMILY*/;
     background: #D1D5DB;
     padding: 0;
     min-height: 100vh;
@@ -620,6 +690,7 @@ def _get_report_css() -> str:
 /* ── A4 Page ── */
 .page {
     width: 794px;
+    min-height: 1123px;
     background: #FFFFFF;
     box-shadow: 0 4px 32px rgba(0,0,0,0.15);
     display: flex;
@@ -632,8 +703,8 @@ def _get_report_css() -> str:
     align-items: center;
     justify-content: space-between;
     padding: 18px 32px;
-    background: #EEF2FF;
-    border-bottom: 3px solid #2746E3;
+    background: /*VAR:HEADER_BG*/;
+    border-bottom: 3px solid /*VAR:HEADER_BORDER*/;
 }
 .header-left {
     display: flex;
@@ -649,7 +720,7 @@ def _get_report_css() -> str:
     padding-left: 14px;
 }
 .report-title {
-    font-family: 'Playfair Display', Georgia, serif;
+    font-family: /*VAR:TITLE_FONT*/;
     font-size: 18px;
     font-weight: 700;
     color: #1E293B;
@@ -693,7 +764,7 @@ def _get_report_css() -> str:
 /* ── Accent Bar ── */
 .accent-bar {
     height: 4px;
-    background: linear-gradient(90deg, #1D4ED8 0%, #7C3AED 50%, #06B6D4 100%);
+    background: /*VAR:ACCENT_GRADIENT*/;
     flex-shrink: 0;
 }
 
@@ -706,7 +777,7 @@ def _get_report_css() -> str:
 /* ── KPI Row ── */
 .kpi-row {
     display: grid;
-    grid-template-columns: repeat(6, 1fr);
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
     gap: 8px;
     margin-bottom: 14px;
 }
@@ -782,7 +853,7 @@ def _get_report_css() -> str:
     width: 20px;
     height: 20px;
     border-radius: 5px;
-    background: #2746E3;
+    background: /*VAR:BADGE_COLOR*/;
     color: #FFF;
     font-size: 9px;
     font-weight: 700;
@@ -830,7 +901,7 @@ def _get_report_css() -> str:
     font-size: 11px;
 }
 .compact-table thead tr {
-    background: #0F172A;
+    background: /*VAR:TABLE_HDR_BG*/;
 }
 .compact-table thead th {
     padding: 6px 8px;
@@ -839,7 +910,7 @@ def _get_report_css() -> str:
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: #94A3B8;
+    color: /*VAR:TABLE_HDR_TEXT*/;
 }
 .compact-table tbody tr {
     border-bottom: 1px solid #F1F5F9;
@@ -1022,6 +1093,7 @@ def _get_report_css() -> str:
     font-size: 9.5px;
     color: #9CA3AF;
     flex-shrink: 0;
+    margin-top: auto;
 }
 
 /* ── Print ── */
@@ -1040,11 +1112,9 @@ def _get_report_css() -> str:
     }
     .page {
         width: 100%;
-        min-height: auto;
+        height: 100vh;
+        min-height: 100vh;
         box-shadow: none;
-    }
-    .section-block {
-        page-break-inside: avoid;
     }
     .page-body {
         padding: 10px 18px;
@@ -1106,7 +1176,7 @@ def _fmt_num(val) -> str:
 
 def _build_executive_summary(num: int, summary_text: str) -> str:
     """Build the executive summary section — compact body text."""
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="executive_summary" data-edit-type="text">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Executive Summary</h2>
     <p class="body-text">{_esc(summary_text)}</p>
 </div>
@@ -1142,7 +1212,7 @@ def _build_insights(num: int, insights_str: str) -> str:
         </div>
 '''
 
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="insights" data-edit-type="text">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Key Insights</h2>
     <div class="insight-list">
 {items_html}    </div>
@@ -1157,7 +1227,7 @@ def _build_discussion(num: int, discussion_text: str) -> str:
 
     # If it's a single paragraph (no pipes/newlines), display as body text
     if len(lines) <= 1:
-        return f'''<div class="section-block">
+        return f'''<div class="section-block" data-section-id="discussion" data-edit-type="text">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Recommendations</h2>
     <p class="body-text">{_esc(discussion_text)}</p>
 </div>
@@ -1175,7 +1245,7 @@ def _build_discussion(num: int, discussion_text: str) -> str:
         </div>
 '''
 
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="discussion" data-edit-type="text">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Recommendations</h2>
     <div class="rec-list">
 {items_html}    </div>
@@ -1183,8 +1253,14 @@ def _build_discussion(num: int, discussion_text: str) -> str:
 '''
 
 
-def _build_kpi_cards(report_data: dict) -> str:
-    """Build the KPI row — 6 pastel cards with bold colored values."""
+def _build_kpi_cards(report_data: dict, hidden_kpi_labels: set = None, style_overrides: dict = None) -> str:
+    """Build the KPI row — auto-reflowing pastel cards with bold colored values.
+
+    If style_overrides contains 'kpi_card_bg', all cards use that background.
+    If style_overrides contains 'kpi_value_color', all card values use that color.
+    """
+    hidden = hidden_kpi_labels or set()
+    so = style_overrides or {}
     # Each card: (label, value, color, bg, sub_text)
     cards = []
 
@@ -1236,21 +1312,28 @@ def _build_kpi_cards(report_data: dict) -> str:
     if inv_summary and inv_summary.get("TotalQuantity", 0) > 0:
         cards.append(("Parts Consumed", _fmt_num(inv_summary.get("TotalQuantity")), "#14B8A6", "#CCFBF1", ""))
 
+    # Filter out hidden KPI cards
+    cards = [(l, v, c, b, s) for l, v, c, b, s in cards if l.lower() not in {h.lower() for h in hidden}]
+
     if not cards:
         return ""
 
-    # Pad to 6 cards or take first 6
+    # Take first 6
+    override_bg = so.get("kpi_card_bg")
+    override_color = so.get("kpi_value_color")
     cards_html = ""
     for label, value, color, bg, sub in cards[:6]:
+        card_bg = override_bg or bg
+        card_color = override_color or color
         sub_html = f'<div class="kpi-sub">{_esc(sub)}</div>' if sub else ""
-        cards_html += f'''        <div class="kpi-card" style="background:{bg}">
-            <div class="kpi-value" style="color:{color}">{value}</div>
+        cards_html += f'''        <div class="kpi-card" data-section-id="kpi:{label}" data-edit-type="toggle" style="background:{card_bg}">
+            <div class="kpi-value" style="color:{card_color}">{value}</div>
             <div class="kpi-label">{_esc(label)}</div>
             {sub_html}
         </div>
 '''
 
-    return f'''    <div class="kpi-row">
+    return f'''    <div class="kpi-row" data-section-id="kpi_row" data-edit-type="style">
 {cards_html}    </div>
 '''
 
@@ -1302,7 +1385,7 @@ def _build_ticket_section(num: int, report_data: dict) -> str:
         elif sla_pct > 20:
             alert = f'<div class="alert-strip amber">&#9888; SLA breach rate of {sla_pct:.1f}% exceeds acceptable thresholds.</div>'
 
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="tickets" data-edit-type="section">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Ticket Status</h2>
     <table class="compact-table">
         <thead>
@@ -1348,7 +1431,7 @@ def _build_task_type_section(num: int, report_data: dict) -> str:
             </tr>
 '''
 
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="ticket_types" data-edit-type="section">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Task Type Breakdown</h2>
     <table class="compact-table">
         <thead>
@@ -1436,7 +1519,7 @@ def _build_engineers_section(num: int, report_data: dict) -> str:
     total_completed = sum(e.get("CompletedTickets", 0) for e in active_eng)
     avg_rate = (total_completed / total_tickets * 100) if total_tickets > 0 else 0
 
-    section_html = f'''<div class="section-block">
+    section_html = f'''<div class="section-block" data-section-id="engineers" data-edit-type="section">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Team Performance</h2>
 '''
 
@@ -1547,7 +1630,7 @@ def _build_inventory_section(num: int, report_data: dict) -> str:
             </tr>
 '''
 
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="inventory" data-edit-type="section">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Inventory Consumption</h2>
     <table class="compact-table">
         <thead>
@@ -1595,7 +1678,7 @@ def _build_certifications_section(num: int, report_data: dict) -> str:
     if expired > 0:
         alert = f'    <div class="alert-strip red">&#9888; {_fmt_num(expired)} certification(s) expired &mdash; renewals required.</div>\n'
 
-    return f'''<div class="section-block">
+    return f'''<div class="section-block" data-section-id="certifications" data-edit-type="section">
     <h2 class="section-heading"><span class="sec-num">{num:02d}</span> Certification Status</h2>
     <table class="compact-table">
         <thead>

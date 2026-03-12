@@ -386,7 +386,11 @@ All return HTML with `<!--CHART_START-->JSON<!--CHART_END-->` for frontend Recha
 
 ### Chat History Tools (`my_agent/tools/chat_history.py`)
 Not ADK tools — called by `main.py` for DB persistence:
-- `save_message()`, `get_sessions()`, `get_session_messages()`, `delete_messages_from()`, `delete_session()`
+- `save_message(session_id, role, content, report_html=None, report_model_json=None)` — inserts message with optional report data in dedicated columns
+- `get_session_messages()` — returns messages with `ReportHtml` and `ReportModelJson` columns
+- `get_sessions()`, `delete_messages_from()`, `delete_session()`
+
+**DB Tables:** `ChatbotSessions` (session metadata), `ChatbotMessages` (messages + report columns). See `docs/architecture.md` Section 21.
 
 ### Suggestions (`my_agent/tools/suggestions.py`)
 Not an ADK tool — called by `main.py` after responses:

@@ -4,6 +4,16 @@ from .db_tools import get_ticket_summary, get_current_date, create_chart_from_se
 from .engineer_tools import get_engineer_performance, get_certification_status
 from .inventory_tools import get_inventory_consumption
 from .report_tools import collect_report_data, build_html_report
+from .report_editor_tools import (
+    toggle_kpi_card,
+    remove_report_section,
+    restore_report_section,
+    rewrite_report_text,
+    customize_report_style,
+    rebuild_report_html,
+    undo_report_edit,
+    regenerate_section,
+)
 from .chart_tools import (
     create_chart,
     create_ticket_status_chart,
@@ -46,4 +56,13 @@ __all__ = [
     # Report tools
     "collect_report_data",
     "build_html_report",
+    # Report editor tools
+    "toggle_kpi_card",
+    "remove_report_section",
+    "restore_report_section",
+    "rewrite_report_text",
+    "customize_report_style",
+    "rebuild_report_html",
+    "undo_report_edit",
+    "regenerate_section",
 ]

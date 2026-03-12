@@ -57,23 +57,40 @@ def ensure_session(session_id: str, user_id: int, title: Optional[str] = None) -
         return False
 
 
-def save_message(session_id: str, role: str, content: str) -> Optional[int]:
+def save_message(
+    session_id: str,
+    role: str,
+    content: str,
+    report_html: Optional[str] = None,
+    report_model_json: Optional[str] = None,
+) -> Optional[int]:
     """
     Insert a message into ChatbotMessages and touch the session's UpdatedAt.
+
+    Args:
+        session_id: Chat session UUID.
+        role: "user" or "assistant".
+        content: The chat message text/HTML (no report data embedded).
+        report_html: Rendered report HTML (stored in dedicated ReportHtml column).
+        report_model_json: JSON-serialized report model (stored in ReportModelJson column).
+
     Returns the new message Id, or None on failure.
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Insert message
+        # Insert message with optional report columns
         cursor.execute(
-            """INSERT INTO dbo.ChatbotMessages (SessionId, Role, Content, CreatedAt)
+            """INSERT INTO dbo.ChatbotMessages
+               (SessionId, Role, Content, ReportHtml, ReportModelJson, CreatedAt)
                OUTPUT INSERTED.Id
-               VALUES (?, ?, ?, SYSDATETIMEOFFSET())""",
+               VALUES (?, ?, ?, ?, ?, SYSDATETIMEOFFSET())""",
             session_id,
             role,
             content,
+            report_html,
+            report_model_json,
         )
         row = cursor.fetchone()
         msg_id = row[0] if row else None
@@ -142,12 +159,16 @@ def get_sessions(user_id: int, limit: int = 50) -> list[dict]:
 
 
 def get_session_messages(session_id: str) -> list[dict]:
-    """Return all messages for a session in chronological order."""
+    """Return all messages for a session in chronological order.
+
+    Each dict includes Id, Role, Content, CreatedAt, and optionally
+    ReportHtml / ReportModelJson (NULL when no report is attached).
+    """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT Id, Role, Content,
+            """SELECT Id, Role, Content, ReportHtml, ReportModelJson,
                       CONVERT(VARCHAR(30), CreatedAt, 127) AS CreatedAt
                FROM dbo.ChatbotMessages
                WHERE SessionId = ?
@@ -197,6 +218,70 @@ def delete_messages_from(session_id: str, message_id: int) -> int:
     except Exception as e:
         logger.error(f"Failed to delete messages from session {session_id}: {e}")
         return -1
+
+
+def get_report_model_from_db(session_id: str) -> tuple:
+    """Load the most recent report_model and HTML from the database for a session.
+
+    Returns (report_model_dict, report_html_str) or (None, None) if not found.
+    Used as fallback when in-memory ADK session has been lost (server restart).
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT TOP 1 ReportHtml, ReportModelJson
+               FROM dbo.ChatbotMessages
+               WHERE SessionId = ? AND ReportModelJson IS NOT NULL
+               ORDER BY Id DESC""",
+            session_id,
+        )
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if row and row[1]:
+            import json
+            model = json.loads(row[1])
+            html = row[0] or ""
+            logger.info(f"Restored report_model from DB for session {session_id}")
+            return model, html
+        return None, None
+    except Exception as e:
+        logger.error(f"Failed to load report_model from DB for session {session_id}: {e}")
+        return None, None
+
+
+def update_report_in_message(session_id: str, report_html: str, report_model_json: str) -> bool:
+    """Update the most recent report message in a session with new HTML + model.
+
+    Used by inline report editing (POST /report/edit) — silently updates the
+    existing report message instead of creating a new chat message.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE dbo.ChatbotMessages
+               SET ReportHtml = ?, ReportModelJson = ?
+               WHERE Id = (
+                   SELECT MAX(Id) FROM dbo.ChatbotMessages
+                   WHERE SessionId = ? AND ReportHtml IS NOT NULL
+               )""",
+            report_html,
+            report_model_json,
+            session_id,
+        )
+        affected = cursor.rowcount
+        conn.commit()
+        cursor.close()
+        conn.close()
+        if affected > 0:
+            logger.info(f"Updated report in session {session_id} (HTML={len(report_html)} chars)")
+        return affected > 0
+    except Exception as e:
+        logger.error(f"Failed to update report in session {session_id}: {e}")
+        return False
 
 
 def delete_session(session_id: str) -> bool:

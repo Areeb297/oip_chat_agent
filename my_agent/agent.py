@@ -21,6 +21,7 @@ from .agents.ticket_analytics import ticket_analytics
 from .agents.engineer_analytics import engineer_analytics
 from .agents.inventory_analytics import inventory_analytics
 from .agents.report_generator import report_generator
+from .agents.report_editor import report_editor
 
 
 # =============================================================================
@@ -178,7 +179,26 @@ Route user requests to the appropriate agent:
    Engineer performance reports, Inventory / spare parts reports, and Custom reports combining the above.
    Unfortunately, I don't have access to [requested topic] data."
 
-7. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
+7. **Report Editing** -> report_editor
+   Use this when:
+   - A report has already been generated in this session (last_report_html exists)
+   - The user wants to CHANGE, EDIT, MODIFY, REMOVE, HIDE, REWRITE, SHOW, or RESTORE
+     sections, KPI cards, or text in the existing report
+   - The user wants to change DESIGN, COLORS, STYLING, FONTS, or THEME of the report
+
+   Examples:
+   - "Remove the SLA card from the report"
+   - "Rewrite the executive summary to be shorter"
+   - "Hide the inventory section"
+   - "Make the header dark blue"
+   - "Change the title"
+   - "Restore the engineers section"
+
+   Do NOT use report_editor for:
+   - Generating a NEW report (use report_generator)
+   - Asking questions about the data (use ticket_analytics/engineer_analytics)
+
+8. **General conversation / follow-ups / "what did I ask"** -> Answer directly using conversation history
 
 ROUTING DISAMBIGUATION:
 - "my tickets" or "ticket summary" -> ticket_analytics (user's own tickets)
@@ -198,5 +218,5 @@ IMPORTANT RULES:
 {Prompts.HTML_OUTPUT_FORMAT}""",
     description="Main OIP Assistant - routes to greeter, ticket analytics, engineer analytics, inventory analytics, OIP expert, or report generator",
     tools=[AgentTool(agent=report_generator)],
-    sub_agents=[greeter, oip_expert, ticket_analytics, engineer_analytics, inventory_analytics],
+    sub_agents=[greeter, oip_expert, ticket_analytics, engineer_analytics, inventory_analytics, report_editor],
 )
