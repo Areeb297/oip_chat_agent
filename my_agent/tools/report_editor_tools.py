@@ -85,7 +85,7 @@ def toggle_kpi_card(
         visible: True to show the card, False to hide it.
             If not provided, toggles the current state.
     """
-    model = _get_model(tool_context)
+    model = copy.deepcopy(_get_model(tool_context))
     if not model:
         return {"status": "no_report", "error_message": "No report exists in this session. Generate a report first."}
 
@@ -156,7 +156,7 @@ def remove_report_section(
             "certifications" — Certification status section
             "inventory" — Inventory/Spare Parts Consumption section
     """
-    model = _get_model(tool_context)
+    model = copy.deepcopy(_get_model(tool_context))
     if not model:
         return {"status": "no_report", "error_message": "No report exists in this session. Generate a report first."}
 
@@ -200,7 +200,7 @@ def restore_report_section(
         section_id: Which section to restore. Same IDs as remove_report_section:
             "tickets", "ticket_types", "engineers", "certifications", "inventory".
     """
-    model = _get_model(tool_context)
+    model = copy.deepcopy(_get_model(tool_context))
     if not model:
         return {"status": "no_report", "error_message": "No report exists in this session. Generate a report first."}
 
@@ -251,7 +251,7 @@ def rewrite_report_text(
             "title" — The report title
         new_text: The new text content for the section.
     """
-    model = _get_model(tool_context)
+    model = copy.deepcopy(_get_model(tool_context))
     if not model:
         return {"status": "no_report", "error_message": "No report exists in this session. Generate a report first."}
 
@@ -312,7 +312,7 @@ def customize_report_style(
         kpi_value_color: Uniform text color for ALL KPI card values (overrides individual colors).
             Set to "default" to restore individual value colors.
     """
-    model = _get_model(tool_context)
+    model = copy.deepcopy(_get_model(tool_context))
     if not model:
         return {"status": "no_report", "error_message": "No report exists in this session. Generate a report first."}
 

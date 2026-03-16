@@ -578,49 +578,45 @@ async def edit_report_inline(request: ReportEditRequest):
     action = request.action
     logger.info(f"[REPORT EDIT] action={action} section={request.section_id} user={user_id} session={session_id} prompt={request.prompt!r}")
 
-    # Get ADK session to access report_model (keyed by app_name + user_id + session_id)
-    session = None
-    if user_id:
-        session = await session_service.get_session(
-            app_name="oip_assistant",
-            user_id=user_id,
-            session_id=session_id,
-        )
+    # Always load report state from DB — this is the source of truth after inline edits.
+    # In-memory ADK session state mutations (via _InlineToolContext) are NOT reliably
+    # persisted across HTTP calls (direct dict mutation bypasses ADK event tracking).
+    # Each edit saves to DB; each edit call must reload from DB to see previous changes.
+    db_model, db_html = get_report_model_from_db(session_id)
 
-    # Fallback: scan InMemorySessionService for session_id if userId wasn't sent or didn't match
-    if session is None and hasattr(session_service, 'sessions'):
-        app_sessions = session_service.sessions.get("oip_assistant", {})
-        for uid, user_sessions in app_sessions.items():
-            if session_id in user_sessions:
-                session = user_sessions[session_id]
-                logger.info(f"[REPORT EDIT] Found session via fallback scan (user_id={uid})")
-                break
-
-    # If session not in memory or missing report_model, always try DB restore
-    has_model = session is not None and "report_model" in session.state
-    if not has_model:
-        logger.info(f"[REPORT EDIT] report_model not in memory, loading from DB for {session_id}")
-        db_model, db_html = get_report_model_from_db(session_id)
-        if db_model:
-            if session is not None:
-                # Session exists but missing report_model — inject it
-                session.state["report_model"] = db_model
-                session.state["last_report_html"] = db_html
-            else:
-                # No session at all — create a lightweight wrapper
-                class _RestoreSession:
-                    def __init__(self, state):
-                        self.state = state
-                session = _RestoreSession({"report_model": db_model, "last_report_html": db_html})
-            logger.info(f"[REPORT EDIT] Restored report_model from DB")
-        else:
+    if db_model:
+        # Extract undo stack that was embedded in the model for DB persistence
+        undo_stack = db_model.pop("_undo_stack", [])
+        state: dict = {
+            "report_model": db_model,
+            "last_report_html": db_html,
+            "report_undo_stack": undo_stack,
+        }
+        logger.info(f"[REPORT EDIT] Loaded from DB (undo_levels={len(undo_stack)}) session={session_id}")
+    else:
+        # DB has no report — fall back to in-memory session (e.g. brand-new report not yet persisted)
+        session = None
+        if user_id:
+            session = await session_service.get_session(
+                app_name="oip_assistant",
+                user_id=user_id,
+                session_id=session_id,
+            )
+        if session is None and hasattr(session_service, 'sessions'):
+            app_sessions = session_service.sessions.get("oip_assistant", {})
+            for uid, user_sessions in app_sessions.items():
+                if session_id in user_sessions:
+                    session = user_sessions[session_id]
+                    break
+        if session is None or "report_model" not in session.state:
             return JSONResponse(status_code=404, content={
                 "status": "no_report",
                 "message": "No report found. Please generate a new report.",
             })
+        state = session.state
 
-    # Create lightweight tool context wrapping the session state
-    ctx = _InlineToolContext(session.state)
+    # Create lightweight tool context wrapping the edit state
+    ctx = _InlineToolContext(state)
 
     # Dispatch action
     result = None
@@ -697,12 +693,14 @@ async def edit_report_inline(request: ReportEditRequest):
     # Sync state back to ADK session (ctx.state is the same dict reference)
     # The editor tools already updated ctx.state["report_model"] and ctx.state["last_report_html"]
 
-    # Persist updated report to DB (silent update, no new chat message)
+    # Persist updated report to DB — embed undo stack in model JSON so it survives across calls
     report_html = ctx.state.get("last_report_html", "")
     report_model = ctx.state.get("report_model")
     if report_html and report_model:
         try:
-            model_json = json.dumps(report_model, default=str)
+            # Embed undo stack inside model so next call can restore it from DB
+            model_to_save = {**report_model, "_undo_stack": ctx.state.get("report_undo_stack", [])}
+            model_json = json.dumps(model_to_save, default=str)
             update_report_in_message(session_id, report_html, model_json)
         except Exception as e:
             logger.warning(f"[REPORT EDIT] Failed to persist to DB: {e}")
