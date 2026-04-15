@@ -284,6 +284,7 @@ def get_ticket_summary(
     date_to: Optional[str] = None,
     include_breakdown: bool = False,
     task_type_names: Optional[str] = None,
+    status_names: Optional[str] = None,
     tool_context: "ToolContext" = None,
 ) -> dict:
     """
@@ -328,6 +329,16 @@ def get_ticket_summary(
                          TR = Trouble Report tickets (reactive calls)
                          Other = Miscellaneous tasks
                          Example: "How many PMs completed?" -> task_type_names="PM"
+        status_names: Filter by ticket status name(s). Optional.
+                      Valid values: "CMS", "Open", "Suspended", "Closed", "In Progress",
+                                    "Pending For Approval", "Canceled", "Reopened"
+                      Can be comma-separated: "CMS,Open"
+                      Use this when the user asks about tickets with a specific status.
+                      IMPORTANT: "CMS" is a ticket STATUS, NOT a project name.
+                      Examples:
+                        "How many CMS tickets?" -> status_names="CMS"
+                        "Show open tickets" -> status_names="Open"
+                        "CMS and Open tickets" -> status_names="CMS,Open"
 
     Returns:
         dict: Ticket summary containing:
@@ -337,6 +348,7 @@ def get_ticket_summary(
             - CompletedTickets: Number of tickets marked Complete
             - PendingApproval: Tickets awaiting supervisor approval
             - SLABreached: Tickets that have breached their SLA deadline
+            - CMSTickets: Number of tickets in CMS status
             - CompletionRate: Percentage of completed tickets (0-100)
             - Username: The queried username
             - UserRole: User's role (Engineer/Supervisor/Admin/PM)
@@ -370,6 +382,9 @@ def get_ticket_summary(
         - "TR calls this month" -> task_type_names="TR", month=3, year=2026
         - "PM and TR tickets in January" -> task_type_names="PM,TR", month=1, year=2026
         - "Completed PMs" -> task_type_names="PM"
+        - "How many CMS tickets?" -> status_names="CMS"
+        - "Show CMS tickets for ANB" -> status_names="CMS", project_names="ANB"
+        - "CMS and Open tickets" -> status_names="CMS,Open"
 
     Note:
         The stored procedure enforces role-based access control:
@@ -380,7 +395,7 @@ def get_ticket_summary(
     try:
         logger.info("📊 Checking your ticket status...")
         # Debug: Log incoming parameters
-        print(f"🔍 [TOOL PARAMS] project_names={project_names}, team_names={team_names}, region_names={region_names}, month={month}, year={year}, include_breakdown={include_breakdown}, task_type_names={task_type_names}")
+        print(f"🔍 [TOOL PARAMS] project_names={project_names}, team_names={team_names}, region_names={region_names}, month={month}, year={year}, include_breakdown={include_breakdown}, task_type_names={task_type_names}, status_names={status_names}")
 
         # Get username from session state via tool_context
         username = None
@@ -456,6 +471,10 @@ def get_ticket_summary(
             params.append(task_type_names)
             param_markers.append('@TaskTypeNames=?')
 
+        if status_names:
+            params.append(status_names)
+            param_markers.append('@StatusNames=?')
+
         # Execute stored procedure
         sql = f"EXEC usp_Chatbot_GetTicketSummary {', '.join(param_markers)}"
         logger.info("🔄 Analyzing ticket data...")
@@ -471,7 +490,7 @@ def get_ticket_summary(
 
             # Ensure numeric fields are proper types for JSON serialization
             numeric_fields = ['TotalTickets', 'OpenTickets', 'SuspendedTickets',
-                            'CompletedTickets', 'PendingApproval', 'SLABreached']
+                            'CompletedTickets', 'PendingApproval', 'SLABreached', 'CMSTickets']
             for field in numeric_fields:
                 if field in result and result[field] is not None:
                     result[field] = int(result[field])
@@ -1198,6 +1217,7 @@ def create_chart_from_session(
         "breached": last_data.get("SLABreached", 0),
         "total": last_data.get("TotalTickets", 0),
         "completion_rate": last_data.get("CompletionRate", 0),
+        "cms": last_data.get("CMSTickets", 0),
     }
 
     # Calculate derived metrics
@@ -1219,6 +1239,7 @@ def create_chart_from_session(
         "remaining": {"label": "Remaining", "color": "#f59e0b"},
         "total": {"label": "Total", "color": "#3b82f6"},
         "completion_rate": {"label": "Completion Rate", "color": "#3b82f6"},
+        "cms": {"label": "CMS", "color": "#06b6d4"},
     }
 
     # Handle gauge chart for completion_rate

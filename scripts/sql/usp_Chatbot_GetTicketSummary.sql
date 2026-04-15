@@ -17,7 +17,8 @@ ALTER PROCEDURE [dbo].[usp_Chatbot_GetTicketSummary]
     @DateFrom DATE = NULL,
     @DateTo DATE = NULL,
     @IncludeBreakdown BIT = 0,
-    @TaskTypeNames NVARCHAR(MAX) = NULL    -- NEW: "PM", "TR", "Other", or "PM,TR"
+    @TaskTypeNames NVARCHAR(MAX) = NULL,   -- "PM", "TR", "Other", or "PM,TR"
+    @StatusNames NVARCHAR(MAX) = NULL      -- e.g. "CMS", "Open", "Suspended", "CMS,Open"
 )
 AS
 BEGIN
@@ -117,11 +118,25 @@ BEGIN
           AND lc.Name LIKE '%' + LTRIM(RTRIM(s.value)) + '%';
     END
 
+    -- Parse comma-separated status names (e.g. "CMS", "Open", "CMS,Open")
+    DECLARE @SelectedStatuses TABLE (StatusId INT, StatusName NVARCHAR(200));
+    IF @StatusNames IS NOT NULL
+    BEGIN
+        INSERT INTO @SelectedStatuses (StatusId, StatusName)
+        SELECT DISTINCT lc.Id, lc.Name
+        FROM LookupChild lc
+        INNER JOIN LookupMaster lm ON lm.Id = lc.LookupMasterId
+        CROSS APPLY STRING_SPLIT(@StatusNames, ',') s
+        WHERE lm.Name = 'Ticket Status'
+          AND lc.Name LIKE '%' + LTRIM(RTRIM(s.value)) + '%';
+    END
+
     -- Validation checks
     IF @TeamNames IS NOT NULL AND NOT EXISTS (SELECT 1 FROM @SelectedTeams)
     BEGIN
         SELECT 0 AS TotalTickets, 0 AS OpenTickets, 0 AS SuspendedTickets,
                0 AS CompletedTickets, 0 AS PendingApproval, 0 AS SLABreached,
+               0 AS CMSTickets,
                0.00 AS CompletionRate, @Username AS Username, '' AS UserRole,
                @ProjectNames AS ProjectFilter, @TeamNames AS TeamFilter,
                @RegionNames AS RegionFilter, @Month AS MonthFilter, @Year AS YearFilter,
@@ -133,6 +148,7 @@ BEGIN
     BEGIN
         SELECT 0 AS TotalTickets, 0 AS OpenTickets, 0 AS SuspendedTickets,
                0 AS CompletedTickets, 0 AS PendingApproval, 0 AS SLABreached,
+               0 AS CMSTickets,
                0.00 AS CompletionRate, @Username AS Username, '' AS UserRole,
                @ProjectNames AS ProjectFilter, @TeamNames AS TeamFilter,
                @RegionNames AS RegionFilter, @Month AS MonthFilter, @Year AS YearFilter,
@@ -144,6 +160,7 @@ BEGIN
     BEGIN
         SELECT 0 AS TotalTickets, 0 AS OpenTickets, 0 AS SuspendedTickets,
                0 AS CompletedTickets, 0 AS PendingApproval, 0 AS SLABreached,
+               0 AS CMSTickets,
                0.00 AS CompletionRate, @Username AS Username, '' AS UserRole,
                @ProjectNames AS ProjectFilter, @TeamNames AS TeamFilter,
                @RegionNames AS RegionFilter, @Month AS MonthFilter, @Year AS YearFilter,
@@ -155,10 +172,23 @@ BEGIN
     BEGIN
         SELECT 0 AS TotalTickets, 0 AS OpenTickets, 0 AS SuspendedTickets,
                0 AS CompletedTickets, 0 AS PendingApproval, 0 AS SLABreached,
+               0 AS CMSTickets,
                0.00 AS CompletionRate, @Username AS Username, '' AS UserRole,
                @ProjectNames AS ProjectFilter, @TeamNames AS TeamFilter,
                @RegionNames AS RegionFilter, @Month AS MonthFilter, @Year AS YearFilter,
                'No matching task types found' AS Message;
+        RETURN;
+    END
+
+    IF @StatusNames IS NOT NULL AND NOT EXISTS (SELECT 1 FROM @SelectedStatuses)
+    BEGIN
+        SELECT 0 AS TotalTickets, 0 AS OpenTickets, 0 AS SuspendedTickets,
+               0 AS CompletedTickets, 0 AS PendingApproval, 0 AS SLABreached,
+               0 AS CMSTickets,
+               0.00 AS CompletionRate, @Username AS Username, '' AS UserRole,
+               @ProjectNames AS ProjectFilter, @TeamNames AS TeamFilter,
+               @RegionNames AS RegionFilter, @Month AS MonthFilter, @Year AS YearFilter,
+               'No matching statuses found' AS Message;
         RETURN;
     END
 
@@ -193,6 +223,7 @@ BEGIN
              AND DATEDIFF(DAY, t.CreatedAt, GETDATE()) > 1
             THEN 1 ELSE 0
         END) AS SLABreached,
+        SUM(CASE WHEN lc.Name = 'CMS' THEN 1 ELSE 0 END) AS CMSTickets,
         CAST(
             CASE WHEN COUNT(*) > 0 
                 THEN (SUM(CASE WHEN lc.Name IN ('Completed', 'Closed') THEN 1.0 ELSE 0 END) / COUNT(*)) * 100
@@ -224,6 +255,7 @@ BEGIN
             (@Month IS NULL AND @DateFrom IS NULL)
         )
         AND (@TaskTypeNames IS NULL OR t.TaskTypeId IN (SELECT TaskTypeId FROM @SelectedTaskTypes))
+        AND (@StatusNames IS NULL OR t.CallStatusId IN (SELECT StatusId FROM @SelectedStatuses))
         AND (@CanViewAll = 1 OR t.EmployeeId = @EmployeeId OR (@IsSupervisor = 1 AND t.CallStatusId = 9));
 
     -- =========================================
@@ -266,6 +298,7 @@ BEGIN
                 OR (@Month IS NULL AND @DateFrom IS NULL)
             )
             AND (@TaskTypeNames IS NULL OR t.TaskTypeId IN (SELECT TaskTypeId FROM @SelectedTaskTypes))
+            AND (@StatusNames IS NULL OR t.CallStatusId IN (SELECT StatusId FROM @SelectedStatuses))
             AND (@CanViewAll = 1 OR t.EmployeeId = @EmployeeId OR (@IsSupervisor = 1 AND t.CallStatusId = 9))
         GROUP BY sp.Name
         ORDER BY TotalTickets DESC;
@@ -304,6 +337,7 @@ BEGIN
                 OR (@Month IS NULL AND @DateFrom IS NULL)
             )
             AND (@TaskTypeNames IS NULL OR t.TaskTypeId IN (SELECT TaskTypeId FROM @SelectedTaskTypes))
+            AND (@StatusNames IS NULL OR t.CallStatusId IN (SELECT StatusId FROM @SelectedStatuses))
             AND (@CanViewAll = 1 OR t.EmployeeId = @EmployeeId OR (@IsSupervisor = 1 AND t.CallStatusId = 9))
         GROUP BY p.Name
         ORDER BY TotalTickets DESC;
@@ -339,6 +373,7 @@ BEGIN
                 OR (@Month IS NULL AND @DateFrom IS NULL)
             )
             AND (@TaskTypeNames IS NULL OR t.TaskTypeId IN (SELECT TaskTypeId FROM @SelectedTaskTypes))
+            AND (@StatusNames IS NULL OR t.CallStatusId IN (SELECT StatusId FROM @SelectedStatuses))
             AND (@CanViewAll = 1 OR t.EmployeeId = @EmployeeId OR (@IsSupervisor = 1 AND t.CallStatusId = 9))
         GROUP BY tm.Name, sp.Name, p.Name
         ORDER BY TotalTickets DESC;

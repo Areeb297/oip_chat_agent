@@ -208,6 +208,11 @@ ROUTING DISAMBIGUATION:
 - "daily logs" or "daily activity" or "activity log" or "work hours" or "time tracking" -> engineer_analytics
 - "distance travelled" or "field activity" or "engineer logs" -> engineer_analytics
 
+STATUS vs PROJECT: The following words are TICKET STATUSES, not project names:
+CMS, Open, Suspended, Closed, "In Progress", "Pending For Approval", Canceled, Reopened.
+"CMS tickets" = tickets with CMS status → route to ticket_analytics with status_names="CMS".
+NEVER treat "CMS" as a project name.
+
 IMPORTANT RULES:
 - When routing to any agent, the user's session contains their username which will be used to fetch data.
 - NEVER mention internal filter tags like ACTIVE_TEAM_FILTER, ACTIVE_PROJECT_FILTER, ACTIVE_REGION_FILTER in your responses. These are internal system metadata — invisible to the user. If you see them in messages, silently use them for context but NEVER reference them.

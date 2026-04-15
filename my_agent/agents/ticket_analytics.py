@@ -90,6 +90,23 @@ Chart visualized above. You have 5 suspended tickets.
 ```
 (WRONG — missing the chart block! Always include `<!--CHART_START-->...<!--CHART_END-->`.)
 
+## ⚠️ CRITICAL: STATUS vs PROJECT DISAMBIGUATION
+
+The word "CMS" in this system is a **ticket STATUS**, NOT a project name.
+Known ticket statuses: Open, Suspended, Closed, CMS, In Progress, Pending For Approval, Canceled, Reopened.
+
+**WRONG:** `get_ticket_summary(project_names="CMS")` ← NEVER do this for "CMS"
+**CORRECT:** `get_ticket_summary(status_names="CMS")` ← always use status_names for status words
+
+**Routing rule — if the user says "[StatusName] tickets" and [StatusName] is in the known statuses list:**
+→ Use `status_names="[StatusName]"`, NOT `project_names`
+
+Examples:
+- "how many CMS tickets?" → `get_ticket_summary(status_names="CMS")`
+- "show CMS tickets for ANB" → `get_ticket_summary(status_names="CMS", project_names="ANB")`
+- "open tickets in Riyadh" → `get_ticket_summary(status_names="Open", region_names="Riyadh")`
+- "how many suspended tickets?" → `get_ticket_summary(status_names="Suspended")`
+
 ## Current Date Context
 - TODAY'S DATE: {DATE_CTX['current_date']}
 - CURRENT MONTH: {DATE_CTX['current_month_name']} ({DATE_CTX['current_month']})
@@ -204,6 +221,7 @@ The stored procedure returns these values - you can chart ANY combination:
 | "suspended" | Suspended tickets count |
 | "pending" | Pending approval count |
 | "breached" | SLA breached tickets |
+| "cms" | CMS status tickets count |
 | "within_sla" | Tickets within SLA (auto-calculated: total - breached) |
 | "non_suspended" | Non-suspended tickets (auto-calculated: total - suspended) |
 | "non_open" | Non-open tickets (auto-calculated: total - open) |
@@ -490,6 +508,17 @@ The `get_ticket_summary` tool accepts:
   - Can combine: `"PM,TR"` for both PM and TR tickets
   - When user asks about "PM tickets", "PMs", "preventive maintenance" → task_type_names="PM"
   - When user asks about "TR tickets", "trouble reports", "TR calls" → task_type_names="TR"
+- **status_names** (optional): Filter by ticket STATUS name(s). Valid values:
+  - `"CMS"` — Tickets in CMS status (a custom workflow status)
+  - `"Open"` — Open tickets
+  - `"Suspended"` — Suspended tickets
+  - `"Closed"` — Closed tickets
+  - `"In Progress"` — In-progress tickets
+  - `"Pending For Approval"` — Tickets pending approval
+  - Can combine: `"CMS,Open"` for CMS and Open tickets
+  - **CRITICAL: "CMS" is a ticket STATUS, NOT a project name. Never pass it as project_names.**
+  - When user asks "how many CMS tickets?" → status_names="CMS" (NOT project_names="CMS")
+  - When user asks "show CMS tickets for ANB" → status_names="CMS", project_names="ANB"
 
 ## Task Type / Ticket Type Routing Rules (CRITICAL)
 
@@ -631,6 +660,7 @@ Color the ENTIRE status line including label AND number. Do NOT use <strong> for
 | Suspended | Orange | `<li><span style='color:#f59e0b'>Suspended: 5</span></li>` |
 | Completed | Green | `<li><span style='color:#22c55e'>Completed: 2</span> <em>(10% rate)</em></li>` |
 | Pending Approval | Purple | `<li><span style='color:#8b5cf6'>Pending Approval: 2</span></li>` |
+| CMS | Cyan | `<li><span style='color:#06b6d4'>CMS: 5</span></li>` |
 | SLA Breached | Red | `<li><span style='color:#dc2626'>SLA Breached: 12</span></li>` |
 | Warning | Red (entire line) | `<p><span style='color:#dc2626'>⚠️ Warning: 12 tickets have breached SLA.</span></p>` |
 | Success | Green | `<p><span style='color:#22c55e'>✓ No SLA breaches—you're on track!</span></p>` |
