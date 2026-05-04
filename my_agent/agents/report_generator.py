@@ -10,23 +10,11 @@ Each agent has a specialized prompt. Data flows via output_key → session state
 See docs/spec-report-generation.md for the full spec.
 """
 
-import os
 from google.adk.agents import LlmAgent, SequentialAgent
-from google.adk.models.lite_llm import LiteLlm
 
+from ..config import AGENT_MODEL
 from ..tools.db_tools import get_current_date, get_lookups
 from ..tools.report_tools import collect_report_data, build_html_report
-
-
-# =============================================================================
-# MODEL CONFIGURATION (same pattern as other agents)
-# =============================================================================
-USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
-
-if USE_OPENROUTER:
-    AGENT_MODEL = LiteLlm(model="openrouter/x-ai/grok-4.1-fast")
-else:
-    AGENT_MODEL = "gemini-2.5-flash"
 
 
 # =============================================================================

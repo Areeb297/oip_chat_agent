@@ -4,17 +4,13 @@ Ebttikar OIP Assistant Agent
 A focused agent system for the Operations Intelligence Platform (OIP).
 Uses Google ADK with RAG capabilities for document-based Q&A.
 
-Supports two model backends:
-1. Google Gemini (default) - uses GOOGLE_API_KEY
-2. OpenRouter (via LiteLLM) - uses OPENROUTER_API_KEY, no quota limits
-
-Set USE_OPENROUTER=true in .env to use OpenRouter instead of Google.
+Model configuration is centralized in config.py and driven by .env:
+  DEFAULT_LLM_MODEL, FALLBACK_LLM_MODEL, USE_OPENROUTER
 """
-import os
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.agent_tool import AgentTool
 
+from .config import AGENT_MODEL
 from .prompts.templates import Prompts
 from .tools.rag_tool import search_oip_documents
 from .agents.ticket_analytics import ticket_analytics
@@ -22,24 +18,6 @@ from .agents.engineer_analytics import engineer_analytics
 from .agents.inventory_analytics import inventory_analytics
 from .agents.report_generator import report_generator
 from .agents.report_editor import report_editor
-
-
-# =============================================================================
-# MODEL CONFIGURATION
-# =============================================================================
-
-# Check if user wants to use OpenRouter instead of Google
-USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
-
-if USE_OPENROUTER:
-    # Use OpenRouter via LiteLLM (no quota limits, pay-per-use)
-    # Available models: minimax/minimax-m2.5, x-ai/grok-4.1-fast, google/gemini-2.5-flash-preview-09-2025
-    AGENT_MODEL = LiteLlm(model="openrouter/x-ai/grok-4.1-fast")
-    print("Using OpenRouter backend (x-ai/grok-4.1-fast)")
-else:
-    # Use Google Gemini directly (free tier: 20 requests/day)
-    AGENT_MODEL = "gemini-2.5-flash"
-    print("Using Google Gemini backend (gemini-2.5-flash)")
 
 
 # =============================================================================

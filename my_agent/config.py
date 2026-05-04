@@ -33,6 +33,10 @@ OPENROUTER_HEADERS = {
 # =============================================================================
 # MODEL SETTINGS
 # =============================================================================
+
+# Whether to use OpenRouter (via LiteLLM) instead of Google Gemini directly
+USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
+
 class Models:
     """Available models organized by provider and use case"""
 
@@ -43,17 +47,39 @@ class Models:
     EMBEDDING_SMALL = "openai/text-embedding-3-small"    # 1536 dims, cheaper
 
     # -------------------------------------------------------------------------
-    # LLMs via OpenRouter (for helper functions, prompt chaining)
+    # LLMs — read from .env for easy switching (OpenRouter now → Ollama later)
     # -------------------------------------------------------------------------
-    GPT4O_MINI = "openai/gpt-4o-mini"          # Fast, cheap, good for chaining
-    GPT4O = "openai/gpt-4o"                    # Best quality
-    CLAUDE_SONNET = "anthropic/claude-3.5-sonnet"
+    # Agent model: used by all ADK agents (root, ticket_analytics, etc.)
+    DEFAULT_LLM = os.getenv("DEFAULT_LLM_MODEL", "qwen/qwen3-32b")
+    FALLBACK_LLM = os.getenv("FALLBACK_LLM_MODEL", "x-ai/grok-4.3")
+    # Helper model: used for titles, suggestions, prompt chaining
+    HELPER_LLM = os.getenv("HELPER_LLM_MODEL", "openai/gpt-4o-mini")
+    # Google native model (when USE_OPENROUTER=false)
+    GOOGLE_AGENT = os.getenv("GOOGLE_AGENT_MODEL", "gemini-2.5-flash")
 
-    # -------------------------------------------------------------------------
-    # AGENT MODELS (for Google ADK - uses Google API directly)
-    # -------------------------------------------------------------------------
-    GEMINI_FLASH = "gemini-2.5-flash"          # Fast, good for agents
-    GEMINI_PRO = "gemini-2.5-pro"              # Better reasoning
+
+# =============================================================================
+# CENTRALIZED AGENT MODEL (import this in all agent files)
+# =============================================================================
+
+def get_agent_model(use_fallback: bool = False):
+    """Return the configured agent model for ADK agents.
+
+    Args:
+        use_fallback: If True, use FALLBACK_LLM_MODEL instead of DEFAULT_LLM_MODEL.
+    """
+    if USE_OPENROUTER:
+        from google.adk.models.lite_llm import LiteLlm
+        model_id = Models.FALLBACK_LLM if use_fallback else Models.DEFAULT_LLM
+        return LiteLlm(model=f"openrouter/{model_id}")
+    else:
+        return Models.GOOGLE_AGENT
+
+# Pre-built instance — all agents import this
+AGENT_MODEL = get_agent_model()
+
+_model_label = f"openrouter/{Models.DEFAULT_LLM}" if USE_OPENROUTER else Models.GOOGLE_AGENT
+print(f"[config] Agent model: {_model_label}")
 
 
 # =============================================================================
@@ -64,10 +90,7 @@ class Models:
 DEFAULT_EMBEDDING_MODEL = Models.EMBEDDING_ADA
 
 # For OpenRouter helper LLM calls (prompt chaining, summarization)
-DEFAULT_LLM_MODEL = Models.GPT4O_MINI
-
-# For Google ADK agents (uses Google API, not OpenRouter)
-DEFAULT_AGENT_MODEL = Models.GEMINI_FLASH
+DEFAULT_HELPER_MODEL = Models.HELPER_LLM
 
 # =============================================================================
 # RAG SETTINGS
@@ -98,7 +121,7 @@ class AgentConfig:
 class SuggestionsConfig:
     """Follow-up suggestion generation settings"""
     ENABLED = True
-    LLM_MODEL = Models.GPT4O_MINI
+    LLM_MODEL = Models.HELPER_LLM
     LLM_TIMEOUT = 3.0          # seconds before falling back to rule-based
     MAX_SUGGESTIONS = 4
     LLM_MAX_TOKENS = 150

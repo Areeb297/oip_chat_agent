@@ -6,7 +6,7 @@ from ..config import (
     OPENROUTER_BASE_URL,
     OPENROUTER_HEADERS,
     DEFAULT_EMBEDDING_MODEL,
-    DEFAULT_LLM_MODEL,
+    DEFAULT_HELPER_MODEL,
 )
 from ..models import EmbeddingResponse, LLMResponse
 
@@ -90,7 +90,7 @@ class OpenRouterClient:
         self,
         system_prompt: str,
         user_prompt: str,
-        model: str = DEFAULT_LLM_MODEL,
+        model: str = DEFAULT_HELPER_MODEL,
         temperature: float = 0.7,
         max_tokens: int = 1000,
     ) -> str:
@@ -126,7 +126,7 @@ class OpenRouterClient:
     def chat_completion_with_history(
         self,
         messages: List[Dict[str, str]],
-        model: str = DEFAULT_LLM_MODEL,
+        model: str = DEFAULT_HELPER_MODEL,
         temperature: float = 0.7,
         max_tokens: int = 1000,
     ) -> str:
@@ -199,7 +199,7 @@ def embed_texts(texts: List[str], model: str = DEFAULT_EMBEDDING_MODEL) -> List[
 def llm_call(
     system_prompt: str,
     user_prompt: str,
-    model: str = DEFAULT_LLM_MODEL,
+    model: str = DEFAULT_HELPER_MODEL,
     temperature: float = 0.7,
 ) -> str:
     """Convenience function for LLM completion."""

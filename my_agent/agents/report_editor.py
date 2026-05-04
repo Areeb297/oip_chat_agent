@@ -8,10 +8,9 @@ regenerates HTML via _rebuild_from_model().
 See docs/spec-report-generation.md Section 20 for the full spec.
 """
 
-import os
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
 
+from ..config import AGENT_MODEL
 from ..tools.report_editor_tools import (
     toggle_kpi_card,
     remove_report_section,
@@ -21,17 +20,6 @@ from ..tools.report_editor_tools import (
     rebuild_report_html,
     undo_report_edit,
 )
-
-
-# =============================================================================
-# MODEL CONFIGURATION
-# =============================================================================
-USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
-
-if USE_OPENROUTER:
-    AGENT_MODEL = LiteLlm(model="openrouter/x-ai/grok-4.1-fast")
-else:
-    AGENT_MODEL = "gemini-2.5-flash"
 
 
 # =============================================================================

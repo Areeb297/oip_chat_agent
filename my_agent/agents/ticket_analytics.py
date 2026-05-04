@@ -5,11 +5,10 @@ Handles queries about tickets, workload, SLA status, and project performance.
 Uses ReAct-style prompting for reliable tool usage and reasoning.
 """
 
-import os
 from datetime import datetime
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
 
+from ..config import AGENT_MODEL
 from ..tools.db_tools import get_ticket_summary, get_ticket_timeline, get_current_date, create_chart_from_session, get_lookups, get_pm_checklist_data
 from ..tools.chart_tools import (
     create_ticket_status_chart,
@@ -21,17 +20,6 @@ from ..tools.chart_tools import (
 )
 from ..tools.chart_guardrails import fix_chart_output
 from ..prompts.templates import Prompts
-
-
-# =============================================================================
-# MODEL CONFIGURATION (inherited from main agent)
-# =============================================================================
-USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
-
-if USE_OPENROUTER:
-    AGENT_MODEL = LiteLlm(model="openrouter/x-ai/grok-4.1-fast")
-else:
-    AGENT_MODEL = "gemini-2.5-flash"
 
 
 # =============================================================================

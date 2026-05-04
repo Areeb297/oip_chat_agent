@@ -31,6 +31,16 @@ from google.genai import types
 
 logger = logging.getLogger("oip_chat_agent")
 
+# Regex to strip Qwen-style <think>...</think> reasoning blocks from text
+_THINK_TAG_RE = re.compile(r'<think>.*?</think>', re.DOTALL)
+
+
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> reasoning blocks (Qwen3, DeepSeek, etc.)."""
+    if not text or '<think>' not in text:
+        return text
+    return _THINK_TAG_RE.sub('', text).strip()
+
 
 def _md_to_html(text: str) -> str:
     """Convert common markdown patterns to HTML so the frontend always gets clean HTML."""
@@ -123,7 +133,7 @@ async def _generate_session_title(session_id: str, user_msg: str, assistant_msg:
         from my_agent.config import OPENROUTER_API_KEY, OPENROUTER_BASE_URL, Models
 
         response = await litellm.acompletion(
-            model=f"openrouter/{Models.GPT4O_MINI}",
+            model=f"openrouter/{Models.HELPER_LLM}",
             messages=[
                 {
                     "role": "system",
@@ -456,7 +466,7 @@ async def chat(request: ChatRequest):
                     if getattr(part, 'thought', False):
                         continue
                     if hasattr(part, "text") and part.text:
-                        response_text = part.text  # Use last final response
+                        response_text = _strip_think_tags(part.text)  # Use last final response
 
     return ChatResponse(response=_md_to_html(response_text), session_id=session_id)
 
@@ -927,6 +937,7 @@ async def run_sse(request: RunSSERequest):
             report_editor_called = False  # Track if report_editor tools were used this request
             streamed_text = ""       # text already sent to client via partial chunks
             final_response_text = "" # complete text from the final event (for DB)
+            _think_buffer = ""       # buffer for incomplete <think> tags across chunks
 
             # Clear multi-chart accumulator in session state at start of each request
             try:
@@ -1103,7 +1114,19 @@ async def run_sse(request: RunSSERequest):
                             if getattr(part, 'thought', False):
                                 continue
                             if hasattr(part, "text") and part.text:
-                                streamed_text += part.text
+                                # Handle <think> tags that may span multiple chunks
+                                raw_chunk = part.text
+                                if _think_buffer:
+                                    raw_chunk = _think_buffer + raw_chunk
+                                    _think_buffer = ""
+                                # If chunk has an opening <think> but no closing tag yet, buffer it
+                                if '<think>' in raw_chunk and '</think>' not in raw_chunk:
+                                    _think_buffer = raw_chunk
+                                    continue
+                                chunk = _strip_think_tags(raw_chunk)
+                                if not chunk:
+                                    continue
+                                streamed_text += chunk
                                 if not chart_tool_called:
                                     # Detect chart JSON in the accumulated text.
                                     # Once detected, stop streaming raw text — the
@@ -1113,7 +1136,7 @@ async def run_sse(request: RunSSERequest):
                                         chart_tool_called = True
                                         print("[STREAM] Chart JSON detected in text — buffering remainder")
                                     else:
-                                        yield f"data: {json.dumps({'text': part.text})}\n\n"
+                                        yield f"data: {json.dumps({'text': chunk})}\n\n"
 
                 # ── Final response: only send if we haven't streamed partials ──
                 elif event.is_final_response():
@@ -1123,19 +1146,22 @@ async def run_sse(request: RunSSERequest):
                             if getattr(part, 'thought', False):
                                 continue
                             if hasattr(part, "text") and part.text:
-                                final_response_text = part.text
+                                cleaned = _strip_think_tags(part.text)
+                                if not cleaned:
+                                    continue
+                                final_response_text = cleaned
                                 # Only send to client if no partial chunks were streamed
                                 # (avoids duplicate text)
                                 if not streamed_text:
                                     # Skip raw text event if it contains chart JSON —
                                     # the post-processed 'html' event will handle it
-                                    if contains_chart_json(part.text):
+                                    if contains_chart_json(cleaned):
                                         print("[STREAM] Chart JSON in final response — sending only via html event")
                                     else:
-                                        yield f"data: {json.dumps({'text': part.text})}\n\n"
+                                        yield f"data: {json.dumps({'text': cleaned})}\n\n"
 
             # ── Post-process: convert markdown to HTML, inject chart from session ──
-            raw_text = final_response_text or streamed_text
+            raw_text = _strip_think_tags(final_response_text or streamed_text)
             print(f"[POST-PROC] chart_tool_called={chart_tool_called}, captured_chart_html={len(captured_chart_html)}chars, streamed={len(streamed_text)}chars, final={len(final_response_text)}chars")
 
             # Fetch session state ONCE — used for chart injection and suggestions
@@ -1169,8 +1195,10 @@ async def run_sse(request: RunSSERequest):
                     try:
                         obj = json.loads(m)
                         configs.append(json.dumps(obj, separators=(',', ':')))
+                        print(f"[CHART DEBUG] {source_label}: type={obj.get('type')}, data_len={len(obj.get('data', []))}, keys={list(obj.get('data', [{}])[0].keys()) if obj.get('data') else 'N/A'}")
                     except Exception:
                         configs.append(m.replace('\n', ' '))
+                        print(f"[CHART DEBUG] {source_label}: raw (not valid JSON): {m[:200]}")
                 if configs:
                     print(f"[CHART INJECT] {source_label}: extracted {len(configs)} chart(s)")
                 return configs
@@ -1184,6 +1212,7 @@ async def run_sse(request: RunSSERequest):
                 if not chart_configs and raw_text and contains_chart_json(raw_text):
                     # Ensure orphaned chart JSON gets wrapped with delimiters
                     raw_text = ensure_chart_delimiters(raw_text)
+                    print(f"[CHART RAW] First 500 chars of raw_text: {raw_text[:500]}")
                     chart_configs = _extract_charts_from_html(raw_text, "streamed_text")
 
                 # Source 3: session state accumulator (last_chart_outputs list)
