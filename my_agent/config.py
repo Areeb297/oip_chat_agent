@@ -34,7 +34,7 @@ OPENROUTER_HEADERS = {
 # MODEL SETTINGS
 # =============================================================================
 
-# Whether to use OpenRouter (via LiteLLM) instead of Google Gemini directly
+# Whether to use OpenRouter (via LiteLLM) for agent models
 USE_OPENROUTER = os.getenv("USE_OPENROUTER", "false").lower() == "true"
 
 class Models:
@@ -51,11 +51,11 @@ class Models:
     # -------------------------------------------------------------------------
     # Agent model: used by all ADK agents (root, ticket_analytics, etc.)
     DEFAULT_LLM = os.getenv("DEFAULT_LLM_MODEL", "qwen/qwen3-32b")
-    FALLBACK_LLM = os.getenv("FALLBACK_LLM_MODEL", "x-ai/grok-4.3")
+    FALLBACK_LLM = os.getenv("FALLBACK_LLM_MODEL", "qwen/qwen3-32b")
     # Helper model: used for titles, suggestions, prompt chaining
-    HELPER_LLM = os.getenv("HELPER_LLM_MODEL", "openai/gpt-4o-mini")
-    # Google native model (when USE_OPENROUTER=false)
-    GOOGLE_AGENT = os.getenv("GOOGLE_AGENT_MODEL", "gemini-2.5-flash")
+    HELPER_LLM = os.getenv("HELPER_LLM_MODEL", "mistralai/mistral-nemo")
+    # Native ADK model ID when USE_OPENROUTER=false (kept open-source)
+    GOOGLE_AGENT = os.getenv("GOOGLE_AGENT_MODEL", "qwen/qwen3-32b")
 
 
 # =============================================================================
